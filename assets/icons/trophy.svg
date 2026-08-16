@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Trophy">
+  <defs>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFF4B0"/>
+      <stop offset="0.34" stop-color="#FFD75E"/>
+      <stop offset="0.7" stop-color="#D99A20"/>
+      <stop offset="1" stop-color="#FFF0A0"/>
+    </linearGradient>
+    <linearGradient id="blue" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#19447F"/>
+      <stop offset="1" stop-color="#07162E"/>
+    </linearGradient>
+  </defs>
+
+  <!-- trophy cup -->
+  <path d="M20 10h24v11c0 10-5 17-12 19-7-2-12-9-12-19V10Z"
+        fill="url(#gold)" stroke="#07162E" stroke-width="2.2"
+        stroke-linejoin="round"/>
+
+  <!-- handles -->
+  <path d="M20 15H10v6c0 7 5 12 12 12M44 15h10v6c0 7-5 12-12 12"
+        fill="none" stroke="url(#gold)" stroke-width="4"
+        stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- inner aviation badge -->
+  <circle cx="32" cy="23.5" r="8.5"
+          fill="url(#blue)" stroke="#49B8FF" stroke-width="1.5"/>
+
+  <path d="M28.5 23.5 23 21l1.8 2.6-1.8 2.6 5.5-2.4M35.5 23.5 41 21l-1.8 2.6 1.8 2.6-5.5-2.4"
+        fill="url(#gold)" stroke="#D99A20" stroke-width=".7"/>
+
+  <path d="m32 18.5 1.5 3 3.3.48-2.4 2.34.57 3.3L32 26.05l-2.97 1.57.57-3.3-2.4-2.34 3.3-.48 1.5-3Z"
+        fill="#49B8FF" stroke="#E3F8FF" stroke-width=".55"/>
+
+  <!-- stem and base -->
+  <path d="M29 39h6v9h-6z"
+        fill="url(#gold)" stroke="#07162E" stroke-width="1.5"/>
+
+  <path d="M22 48h20l4 7H18l4-7Z"
+        fill="url(#blue)" stroke="url(#gold)" stroke-width="2.5"
+        stroke-linejoin="round"/>
+
+  <!-- highlights -->
+  <path d="M25 13h14"
+        stroke="#FFF9D0" stroke-width="1.4" stroke-linecap="round" opacity=".9"/>
+</svg>

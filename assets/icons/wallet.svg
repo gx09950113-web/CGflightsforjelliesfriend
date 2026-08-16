@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Wallet">
+  <defs>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFF2A6"/>
+      <stop offset="0.35" stop-color="#FFD45B"/>
+      <stop offset="0.72" stop-color="#D99A21"/>
+      <stop offset="1" stop-color="#FFF0A0"/>
+    </linearGradient>
+    <linearGradient id="blue" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#183F78"/>
+      <stop offset="1" stop-color="#07162E"/>
+    </linearGradient>
+  </defs>
+
+  <!-- wallet body -->
+  <path d="M9 17.5C9 13.9 11.9 11 15.5 11H44c4.4 0 8 3.6 8 8v2H16.5A7.5 7.5 0 0 0 9 28.5v-11Z"
+        fill="url(#gold)" stroke="#07162E" stroke-width="2.2" stroke-linejoin="round"/>
+
+  <path d="M10 21h38.5A6.5 6.5 0 0 1 55 27.5v24A6.5 6.5 0 0 1 48.5 58h-32A6.5 6.5 0 0 1 10 51.5V21Z"
+        fill="url(#blue)" stroke="url(#gold)" stroke-width="3" stroke-linejoin="round"/>
+
+  <!-- clasp -->
+  <path d="M39 31h16v14H39a7 7 0 0 1 0-14Z"
+        fill="#0C2448" stroke="url(#gold)" stroke-width="2.6" stroke-linejoin="round"/>
+
+  <circle cx="44.5" cy="38" r="2.4" fill="#48B8FF" stroke="#DDF6FF" stroke-width="0.8"/>
+
+  <!-- coin -->
+  <circle cx="22" cy="39" r="8.5" fill="url(#gold)" stroke="#07162E" stroke-width="1.8"/>
+  <path d="M22 33.5v11M18.8 36.2h4.6a2.2 2.2 0 0 1 0 4.4h-2.8a2.2 2.2 0 0 0 0 4.4h4.6"
+        fill="none" stroke="#123766" stroke-width="1.8" stroke-linecap="round"/>
+
+  <!-- subtle aviation wing lines -->
+  <path d="M14.5 49.5h10.8M38.5 49.5h10.8"
+        stroke="#3FA9FF" stroke-width="1.5" stroke-linecap="round" opacity=".8"/>
+</svg>

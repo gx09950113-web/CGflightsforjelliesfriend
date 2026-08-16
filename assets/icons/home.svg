@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Home">
+  <defs>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFF1A8"/>
+      <stop offset="0.38" stop-color="#FFD35A"/>
+      <stop offset="0.72" stop-color="#D99A20"/>
+      <stop offset="1" stop-color="#FFF0A0"/>
+    </linearGradient>
+    <linearGradient id="blue" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#163E78"/>
+      <stop offset="1" stop-color="#07172F"/>
+    </linearGradient>
+  </defs>
+
+  <!-- compact aviation-style badge -->
+  <path d="M32 5 5.5 27.2l4.4 5.2L32 13.9l22.1 18.5 4.4-5.2L32 5Z"
+        fill="url(#gold)" stroke="#07172F" stroke-width="2.2" stroke-linejoin="round"/>
+
+  <!-- house body -->
+  <path d="M13.5 29.6 32 14.2l18.5 15.4V55H38.8V39.5H25.2V55H13.5V29.6Z"
+        fill="url(#blue)" stroke="url(#gold)" stroke-width="3" stroke-linejoin="round"/>
+
+  <!-- door -->
+  <path d="M27.7 41.8h8.6V55h-8.6Z"
+        fill="#0B2346" stroke="#3DA9FF" stroke-width="1.6"/>
+
+  <!-- wing accents -->
+  <path d="M12.2 39H4.5l5.3 4.5h5.1M51.8 39h7.7l-5.3 4.5h-5.1"
+        fill="none" stroke="url(#gold)" stroke-width="2.5"
+        stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- aviation star -->
+  <path d="m32 23.1 1.55 3.15 3.48.5-2.52 2.46.6 3.46L32 31.03l-3.11 1.64.6-3.46-2.52-2.46 3.48-.5L32 23.1Z"
+        fill="#49B8FF" stroke="#DDF5FF" stroke-width=".8"/>
+</svg>

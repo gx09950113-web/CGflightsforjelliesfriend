@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Coin">
+  <defs>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFF4B0"/>
+      <stop offset="0.32" stop-color="#FFD75E"/>
+      <stop offset="0.68" stop-color="#D89A1E"/>
+      <stop offset="1" stop-color="#FFF0A0"/>
+    </linearGradient>
+    <linearGradient id="blue" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1A447F"/>
+      <stop offset="1" stop-color="#07162D"/>
+    </linearGradient>
+  </defs>
+
+  <!-- outer coin -->
+  <circle cx="32" cy="32" r="25.5"
+          fill="url(#gold)" stroke="#07162D" stroke-width="2.6"/>
+
+  <!-- inner navy medallion -->
+  <circle cx="32" cy="32" r="18.5"
+          fill="url(#blue)" stroke="#FFF0A0" stroke-width="2.2"/>
+
+  <!-- winged emblem -->
+  <path d="M25.5 31.8 15 27.2l3.2 4.8-3.2 4.8 10.5-4.6M38.5 31.8 49 27.2 45.8 32l3.2 4.8-10.5-4.6"
+        fill="url(#gold)" stroke="#D89A1E" stroke-width="1.1" stroke-linejoin="round"/>
+
+  <!-- central star -->
+  <path d="m32 21.7 2.4 5 5.5.8-4 3.9.95 5.5L32 34.3l-4.85 2.6.95-5.5-4-3.9 5.5-.8 2.4-5Z"
+        fill="#49B8FF" stroke="#E4F7FF" stroke-width="0.9"/>
+
+  <!-- rim highlights -->
+  <path d="M18 15.5a22 22 0 0 1 28 0"
+        fill="none" stroke="#FFF9D0" stroke-width="1.8" stroke-linecap="round" opacity=".9"/>
+  <path d="M18 48.5a22 22 0 0 0 28 0"
+        fill="none" stroke="#B77713" stroke-width="1.6" stroke-linecap="round" opacity=".8"/>
+</svg>

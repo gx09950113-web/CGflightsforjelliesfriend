@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Settings">
+  <defs>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFF3AA"/>
+      <stop offset="0.36" stop-color="#FFD45B"/>
+      <stop offset="0.72" stop-color="#D99A20"/>
+      <stop offset="1" stop-color="#FFF0A0"/>
+    </linearGradient>
+    <linearGradient id="blue" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#19447F"/>
+      <stop offset="1" stop-color="#07162E"/>
+    </linearGradient>
+  </defs>
+
+  <!-- gear -->
+  <path d="M27.7 6h8.6l1.3 6.2a20.5 20.5 0 0 1 4.3 1.8l5.3-3.5 6.1 6.1-3.5 5.3a20.5 20.5 0 0 1 1.8 4.3L58 27.7v8.6l-6.4 1.3a20.5 20.5 0 0 1-1.8 4.3l3.5 5.3-6.1 6.1-5.3-3.5a20.5 20.5 0 0 1-4.3 1.8L36.3 58h-8.6l-1.3-6.4a20.5 20.5 0 0 1-4.3-1.8l-5.3 3.5-6.1-6.1 3.5-5.3a20.5 20.5 0 0 1-1.8-4.3L6 36.3v-8.6l6.4-1.3a20.5 20.5 0 0 1 1.8-4.3l-3.5-5.3 6.1-6.1 5.3 3.5a20.5 20.5 0 0 1 4.3-1.8L27.7 6Z"
+        fill="url(#gold)" stroke="#07162E" stroke-width="2.2" stroke-linejoin="round"/>
+
+  <!-- inner aviation dial -->
+  <circle cx="32" cy="32" r="14.5"
+          fill="url(#blue)" stroke="#49B8FF" stroke-width="2"/>
+
+  <circle cx="32" cy="32" r="6.5"
+          fill="#0A2347" stroke="url(#gold)" stroke-width="2.5"/>
+
+  <!-- compass / aviation ticks -->
+  <path d="M32 17.5v4M32 42.5v4M17.5 32h4M42.5 32h4"
+        stroke="#FFF2A8" stroke-width="1.7" stroke-linecap="round"/>
+
+  <!-- center star -->
+  <path d="m32 27.8 1.25 2.55 2.82.41-2.04 1.99.48 2.81L32 34.22l-2.51 1.32.48-2.81-2.04-1.99 2.82-.41L32 27.8Z"
+        fill="#49B8FF" stroke="#E3F8FF" stroke-width=".6"/>
+</svg>

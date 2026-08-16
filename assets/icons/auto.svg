@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Auto">
+  <defs>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFF3AA"/>
+      <stop offset="0.36" stop-color="#FFD45B"/>
+      <stop offset="0.72" stop-color="#D99A20"/>
+      <stop offset="1" stop-color="#FFF0A0"/>
+    </linearGradient>
+    <linearGradient id="blue" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#19447F"/>
+      <stop offset="1" stop-color="#07162E"/>
+    </linearGradient>
+  </defs>
+
+  <!-- auto badge -->
+  <circle cx="32" cy="32" r="25"
+          fill="url(#blue)" stroke="url(#gold)" stroke-width="3"/>
+
+  <!-- circular automation arrows -->
+  <path d="M18.5 25.5A16 16 0 0 1 44 19"
+        fill="none" stroke="url(#gold)" stroke-width="3.6"
+        stroke-linecap="round"/>
+  <path d="m41 14 5 5-6.5 2"
+        fill="none" stroke="url(#gold)" stroke-width="3.6"
+        stroke-linecap="round" stroke-linejoin="round"/>
+
+  <path d="M45.5 38.5A16 16 0 0 1 20 45"
+        fill="none" stroke="#49B8FF" stroke-width="3.6"
+        stroke-linecap="round"/>
+  <path d="m23 50-5-5 6.5-2"
+        fill="none" stroke="#49B8FF" stroke-width="3.6"
+        stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- central A -->
+  <path d="m32 21-9 23h5l1.8-5h4.4l1.8 5h5L32 21Zm0 7.8 1.2 5.2h-2.4l1.2-5.2Z"
+        fill="url(#gold)" stroke="#07162E" stroke-width="1.1"
+        stroke-linejoin="round"/>
+
+  <!-- small aviation star -->
+  <path d="m32 8 1.05 2.15 2.38.35-1.72 1.67.4 2.36L32 13.42l-2.11 1.11.4-2.36-1.72-1.67 2.38-.35L32 8Z"
+        fill="#49B8FF" stroke="#E3F8FF" stroke-width=".55"/>
+</svg>

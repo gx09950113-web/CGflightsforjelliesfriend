@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Rules">
+  <defs>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFF3AA"/>
+      <stop offset="0.36" stop-color="#FFD45B"/>
+      <stop offset="0.72" stop-color="#D99A20"/>
+      <stop offset="1" stop-color="#FFF0A0"/>
+    </linearGradient>
+    <linearGradient id="blue" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#19447F"/>
+      <stop offset="1" stop-color="#07162E"/>
+    </linearGradient>
+  </defs>
+
+  <!-- document body -->
+  <path d="M16 8h24l10 10v38H16z"
+        fill="url(#blue)" stroke="url(#gold)" stroke-width="3"
+        stroke-linejoin="round"/>
+
+  <!-- folded corner -->
+  <path d="M40 8v12h10"
+        fill="#0E2B55" stroke="url(#gold)" stroke-width="2.4"
+        stroke-linejoin="round"/>
+
+  <!-- rule lines -->
+  <path d="M24 27h18M24 35h18M24 43h13"
+        fill="none" stroke="#49B8FF" stroke-width="2.6"
+        stroke-linecap="round"/>
+
+  <!-- check mark -->
+  <circle cx="22" cy="49" r="6.2"
+          fill="url(#gold)" stroke="#07162E" stroke-width="1.5"/>
+  <path d="m18.8 49 2.1 2.2 4.3-4.6"
+        fill="none" stroke="#123766" stroke-width="2"
+        stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- aviation star accent -->
+  <path d="m31.5 16.5 1.15 2.35 2.6.38-1.88 1.83.44 2.58-2.31-1.22-2.31 1.22.44-2.58-1.88-1.83 2.6-.38 1.15-2.35Z"
+        fill="#FFF0A0" opacity=".95"/>
+</svg>

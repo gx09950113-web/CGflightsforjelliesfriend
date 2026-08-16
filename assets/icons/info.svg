@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Information">
+  <defs>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFF3AA"/>
+      <stop offset="0.36" stop-color="#FFD45B"/>
+      <stop offset="0.72" stop-color="#D99A20"/>
+      <stop offset="1" stop-color="#FFF0A0"/>
+    </linearGradient>
+    <linearGradient id="blue" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#19447F"/>
+      <stop offset="1" stop-color="#07162E"/>
+    </linearGradient>
+  </defs>
+
+  <!-- aviation badge -->
+  <circle cx="32" cy="32" r="24"
+          fill="url(#blue)" stroke="url(#gold)" stroke-width="3"/>
+
+  <!-- wing accents -->
+  <path d="M9.5 27 3.5 31.5 10 35h6M54.5 27l6 4.5-6.5 3.5h-6"
+        fill="none" stroke="url(#gold)" stroke-width="2.5"
+        stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- inner electric ring -->
+  <circle cx="32" cy="32" r="17.5"
+          fill="none" stroke="#49B8FF" stroke-width="1.7" opacity=".9"/>
+
+  <!-- information dot -->
+  <circle cx="32" cy="21.5" r="3.2"
+          fill="url(#gold)" stroke="#FFF7C8" stroke-width=".8"/>
+
+  <!-- information stem -->
+  <path d="M32 29v16"
+        fill="none" stroke="url(#gold)" stroke-width="5"
+        stroke-linecap="round"/>
+
+  <!-- aviation star accent -->
+  <path d="m32 6.5 1.1 2.25 2.5.36-1.8 1.76.42 2.48L32 12.18l-2.23 1.17.43-2.48-1.8-1.76 2.5-.36L32 6.5Z"
+        fill="#49B8FF" stroke="#E3F8FF" stroke-width=".6"/>
+</svg>
