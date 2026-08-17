@@ -2,627 +2,590 @@
    CG FLIGHT
    js/core/login.js
 
-   Login reward domain layer.
+   Persistent player initialization and daily login rewards.
 
    Responsibilities:
-   - Detect first login
-   - Grant first-login bonus through wallet.js
-   - Grant daily login reward
+   - Initialize first local player data
+   - Grant one-time initial bonus
+   - Process daily login reward
    - Track consecutive login streak
-   - Handle seven-day login cycle
-   - Reset streak after interruption
-   - Prevent duplicate rewards on the same calendar day
+   - Track 7-day reward cycle
+   - Reset streak when login continuity is broken
+   - Prevent duplicate same-day rewards
+   - Expose current login status
 
-   Rules:
-   - First player initialization:
-       +10,000 first-login bonus
-       +1,000 Day 1 daily reward
-       =11,000 total
+   LOGIN RULES:
+   1. First local player initialization:
+        +10,000 initial bonus
 
-   - Every valid new login day:
-       +1,000
+   2. Every valid new login day:
+        +1,000 daily reward
 
-   - Day 7:
-       +1,000 daily reward
-       +7,777 streak bonus
-       =8,777
+   3. Cycle Day 7:
+        +7,777 EXTRA bonus
 
-   - Day 8:
-       cycle resets to Day 1
+   Therefore:
+        First login Day 1 = 11,000
+        Day 7            = 8,777
 
-   - Missing one or more calendar days:
-       streak resets to Day 1
+   4. Cycle Day 8 returns to Day 1.
+
+   5. Missing one or more calendar days resets:
+        streak   -> 1
+        cycleDay -> 1
+
+   IMPORTANT:
+   Date comparison uses LOCAL CALENDAR DATES,
+   not UTC ISO date slicing.
 ========================================================= */
+
 
 import {
     getData,
-    updateData,
-    initializePlayerData
+    updateData
 } from "./storage.js";
 
 import {
-    credit,
-    claimFirstLoginBonus,
-    WALLET_TRANSACTION_TYPES
+    creditInitialBonus,
+    creditDailyLogin,
+    creditLoginStreakBonus
 } from "./wallet.js";
+
+import {
+    clone,
+    getLocalDateKey,
+    getCalendarDayDifference
+} from "./utils.js";
 
 
 /* =========================================================
    LOGIN CONFIG
 ========================================================= */
 
-const DAILY_LOGIN_REWARD = 1000;
+const LOGIN_CONFIG = Object.freeze({
 
-const DAY_SEVEN_BONUS = 7777;
+    INITIAL_BONUS:
+        10000,
 
-const LOGIN_CYCLE_LENGTH = 7;
+    DAILY_REWARD:
+        1000,
+
+    STREAK_BONUS:
+        7777,
+
+    CYCLE_LENGTH:
+        7
+});
 
 
 /* =========================================================
-   DATE HELPERS
-
-   Login uses the player's local calendar date.
-
-   Example:
-   2026-08-17 23:59
-   2026-08-18 00:01
-
-   These are two different login days.
+   LOGIN EVENT TYPES
 ========================================================= */
 
-function getLocalDateString(
-    date = new Date()
-) {
-    if (!(date instanceof Date)) {
-        date = new Date(date);
-    }
+const LOGIN_EVENT_TYPES =
+    Object.freeze({
 
+        INITIALIZED:
+            "INITIALIZED",
+
+        DAILY_REWARD:
+            "DAILY_REWARD",
+
+        STREAK_BONUS:
+            "STREAK_BONUS",
+
+        ALREADY_CLAIMED:
+            "ALREADY_CLAIMED",
+
+        STREAK_RESET:
+            "STREAK_RESET"
+    });
+
+
+/* =========================================================
+   LOGIN LISTENERS
+========================================================= */
+
+const loginListeners =
+    new Set();
+
+
+function subscribeToLogin(
+    listener
+) {
     if (
-        Number.isNaN(
-            date.getTime()
-        )
+        typeof listener !==
+        "function"
     ) {
         throw new TypeError(
-            "[CG Flight] Invalid date."
+            "[CG Flight] Login listener must be a function."
         );
     }
 
-    const year =
-        date.getFullYear();
 
-    const month =
-        String(
-            date.getMonth() + 1
-        ).padStart(
-            2,
-            "0"
+    loginListeners.add(
+        listener
+    );
+
+
+    return function unsubscribe() {
+
+        loginListeners.delete(
+            listener
         );
-
-    const day =
-        String(
-            date.getDate()
-        ).padStart(
-            2,
-            "0"
-        );
-
-    return `${year}-${month}-${day}`;
+    };
 }
 
 
 /* =========================================================
-   PARSE LOCAL DATE
-
-   Avoid Date("YYYY-MM-DD") because browsers interpret that
-   format as UTC in many environments.
-
-   We explicitly construct a local Date instead.
+   NOTIFY LOGIN LISTENERS
 ========================================================= */
 
-function parseLocalDateString(
-    dateString
+function notifyLoginListeners(
+    event
 ) {
-    if (
-        typeof dateString !==
-        "string"
+    const payload = {
+        ...clone(event),
+
+        timestamp:
+            event.timestamp ??
+            Date.now()
+    };
+
+
+    for (
+        const listener
+        of loginListeners
     ) {
-        return null;
+        try {
+
+            listener(
+                payload
+            );
+
+        } catch (error) {
+
+            console.error(
+                "[CG Flight] Login listener failed:",
+                error
+            );
+        }
     }
-
-    const match =
-        /^(\d{4})-(\d{2})-(\d{2})$/
-            .exec(dateString);
-
-    if (!match) {
-        return null;
-    }
-
-    const year =
-        Number(match[1]);
-
-    const month =
-        Number(match[2]);
-
-    const day =
-        Number(match[3]);
-
-    const date =
-        new Date(
-            year,
-            month - 1,
-            day
-        );
-
-    if (
-        date.getFullYear() !== year ||
-        date.getMonth() !==
-            month - 1 ||
-        date.getDate() !== day
-    ) {
-        return null;
-    }
-
-    return date;
 }
 
 
 /* =========================================================
-   CALENDAR DAY DIFFERENCE
+   CYCLE DAY FROM STREAK
 
-   Returns:
-   0 = same day
-   1 = next calendar day
-   2+ = interrupted streak
-   negative = system clock moved backwards
+   Examples:
+       streak 1  -> Day 1
+       streak 7  -> Day 7
+       streak 8  -> Day 1
+       streak 14 -> Day 7
+       streak 15 -> Day 1
 ========================================================= */
 
-function getCalendarDayDifference(
-    earlierDateString,
-    laterDateString
+function calculateCycleDay(
+    streak
 ) {
-    const earlier =
-        parseLocalDateString(
-            earlierDateString
-        );
+    const numeric =
+        Number(streak);
 
-    const later =
-        parseLocalDateString(
-            laterDateString
-        );
 
     if (
-        !earlier ||
-        !later
+        !Number.isInteger(
+            numeric
+        ) ||
+        numeric <= 0
     ) {
-        return null;
+        return 0;
     }
 
-    const earlierUTC =
-        Date.UTC(
-            earlier.getFullYear(),
-            earlier.getMonth(),
-            earlier.getDate()
-        );
 
-    const laterUTC =
-        Date.UTC(
-            later.getFullYear(),
-            later.getMonth(),
-            later.getDate()
-        );
-
-    return Math.round(
+    return (
         (
-            laterUTC -
-            earlierUTC
-        ) /
-        86400000
+            numeric - 1
+        ) %
+        LOGIN_CONFIG.CYCLE_LENGTH
+    ) + 1;
+}
+
+
+/* =========================================================
+   GET LOGIN DATA
+========================================================= */
+
+function getLoginData() {
+    const data =
+        getData();
+
+
+    const login =
+        data.login ?? {};
+
+
+    return {
+
+        lastLoginDate:
+            login.lastLoginDate ??
+            null,
+
+        streak:
+            Number.isInteger(
+                login.streak
+            )
+                ? Math.max(
+                    0,
+                    login.streak
+                )
+                : 0,
+
+        cycleDay:
+            Number.isInteger(
+                login.cycleDay
+            )
+                ? Math.max(
+                    0,
+                    Math.min(
+                        LOGIN_CONFIG
+                            .CYCLE_LENGTH,
+
+                        login.cycleDay
+                    )
+                )
+                : 0,
+
+        totalLoginDays:
+            Number.isInteger(
+                login.totalLoginDays
+            )
+                ? Math.max(
+                    0,
+                    login.totalLoginDays
+                )
+                : 0,
+
+        lastReward:
+            Number.isFinite(
+                Number(
+                    login.lastReward
+                )
+            )
+                ? Math.max(
+                    0,
+                    Number(
+                        login.lastReward
+                    )
+                )
+                : 0,
+
+        lastRewardAt:
+            login.lastRewardAt ??
+            null
+    };
+}
+
+
+/* =========================================================
+   GET PLAYER INITIALIZATION STATUS
+========================================================= */
+
+function isPlayerInitialized() {
+    const data =
+        getData();
+
+
+    return (
+        data.player?.initialized ===
+        true
     );
 }
 
 
 /* =========================================================
-   LOGIN STATE SANITIZER
+   INITIALIZE PLAYER
+
+   Grants ONLY the one-time 10,000 initial bonus.
+
+   Daily Day 1 reward is handled separately by
+   processLogin(), so the responsibilities remain explicit.
 ========================================================= */
 
-function sanitizeLoginState(
-    login
-) {
-    const source =
-        login &&
-        typeof login === "object" &&
-        !Array.isArray(login)
-            ? login
-            : {};
+function initializePlayer() {
 
-    const lastLoginDate =
-        typeof source.lastLoginDate ===
-        "string"
-            ? source.lastLoginDate
-            : null;
-
-    let streak =
-        Number.isInteger(
-            source.streak
-        ) &&
-        source.streak >= 0
-            ? source.streak
-            : 0;
-
-    let cycleDay =
-        Number.isInteger(
-            source.cycleDay
-        ) &&
-        source.cycleDay >= 0
-            ? source.cycleDay
-            : 0;
-
-    if (
-        cycleDay >
-        LOGIN_CYCLE_LENGTH
-    ) {
-        cycleDay = 0;
-    }
-
-    if (
-        streak === 0 &&
-        cycleDay !== 0
-    ) {
-        cycleDay = 0;
-    }
-
-    return {
-        lastLoginDate,
-        streak,
-        cycleDay
-    };
-}
-
-
-/* =========================================================
-   GET LOGIN STATUS
-========================================================= */
-
-function getLoginStatus(
-    now = new Date()
-) {
-    const today =
-        getLocalDateString(now);
-
-    const data =
+    const currentData =
         getData();
 
-    const login =
-        sanitizeLoginState(
-            data.login
-        );
-
-    const alreadyClaimedToday =
-        login.lastLoginDate ===
-        today;
-
-    return {
-        today,
-
-        lastLoginDate:
-            login.lastLoginDate,
-
-        streak:
-            login.streak,
-
-        cycleDay:
-            login.cycleDay,
-
-        alreadyClaimedToday
-    };
-}
-
-
-/* =========================================================
-   DETERMINE NEXT LOGIN STATE
-========================================================= */
-
-function calculateNextLoginState(
-    currentLogin,
-    today
-) {
-    const login =
-        sanitizeLoginState(
-            currentLogin
-        );
-
-
-    /* -----------------------------------------------------
-       First login ever
-    ----------------------------------------------------- */
 
     if (
-        login.lastLoginDate ===
-        null
+        currentData.player
+            ?.initialized ===
+        true
     ) {
         return {
-            rewardable: true,
+            success: true,
+
+            initialized: false,
 
             reason:
-                "FIRST_LOGIN_DAY",
+                "ALREADY_INITIALIZED",
 
-            streak: 1,
-
-            cycleDay: 1,
-
-            interrupted: false,
-
-            cycleReset: false
+            initialBonus:
+                0
         };
     }
 
 
-    /* -----------------------------------------------------
-       Same calendar day
-    ----------------------------------------------------- */
+    const timestamp =
+        new Date()
+            .toISOString();
 
-    if (
-        login.lastLoginDate ===
-        today
-    ) {
+
+    /*
+     First mark player initialized.
+
+     This prevents a failed/reloaded page from repeatedly
+     treating an existing local profile as completely new.
+    */
+
+    const saved =
+        updateData(
+            (data) => {
+
+                data.player.initialized =
+                    true;
+
+
+                data.player.createdAt =
+                    data.player.createdAt ??
+                    timestamp;
+            }
+        );
+
+
+    if (!saved) {
         return {
-            rewardable: false,
+            success: false,
+
+            initialized: false,
 
             reason:
-                "ALREADY_CLAIMED_TODAY",
+                "STORAGE_WRITE_FAILED",
 
-            streak:
-                login.streak,
+            initialBonus:
+                0
+        };
+    }
 
-            cycleDay:
-                login.cycleDay,
 
-            interrupted: false,
+    const bonusResult =
+        creditInitialBonus(
+            LOGIN_CONFIG
+                .INITIAL_BONUS
+        );
 
-            cycleReset: false
+
+    if (
+        !bonusResult.success
+    ) {
+
+        /*
+         Roll the initialization flag back if the bonus
+         cannot be credited.
+
+         This keeps first-login initialization recoverable.
+        */
+
+        updateData(
+            (data) => {
+
+                data.player.initialized =
+                    false;
+
+
+                data.player.createdAt =
+                    null;
+            }
+        );
+
+
+        return {
+            success: false,
+
+            initialized: false,
+
+            reason:
+                "INITIAL_BONUS_FAILED",
+
+            walletReason:
+                bonusResult.reason,
+
+            initialBonus:
+                0
+        };
+    }
+
+
+    const event = {
+
+        type:
+            LOGIN_EVENT_TYPES
+                .INITIALIZED,
+
+        initialized:
+            true,
+
+        initialBonus:
+            LOGIN_CONFIG
+                .INITIAL_BONUS,
+
+        transactionId:
+            bonusResult
+                .transactionId,
+
+        timestamp:
+            Date.now()
+    };
+
+
+    notifyLoginListeners(
+        event
+    );
+
+
+    return {
+        success: true,
+
+        initialized: true,
+
+        initialBonus:
+            LOGIN_CONFIG
+                .INITIAL_BONUS,
+
+        transactionId:
+            bonusResult
+                .transactionId
+    };
+}
+
+
+/* =========================================================
+   DETERMINE LOGIN TRANSITION
+
+   Returns how today's login should behave based on
+   lastLoginDate.
+========================================================= */
+
+function determineLoginTransition(
+    lastLoginDate,
+    today
+) {
+
+    if (
+        !lastLoginDate
+    ) {
+        return {
+            sameDay:
+                false,
+
+            consecutive:
+                false,
+
+            reset:
+                false,
+
+            dayDifference:
+                null
         };
     }
 
 
     const difference =
         getCalendarDayDifference(
-            login.lastLoginDate,
+            lastLoginDate,
             today
         );
 
 
-    /* -----------------------------------------------------
-       Invalid previous date
-
-       Treat as a broken streak and restart safely.
-    ----------------------------------------------------- */
-
-    if (difference === null) {
-        return {
-            rewardable: true,
-
-            reason:
-                "INVALID_PREVIOUS_DATE",
-
-            streak: 1,
-
-            cycleDay: 1,
-
-            interrupted: true,
-
-            cycleReset: true
-        };
-    }
-
-
-    /* -----------------------------------------------------
-       Device clock moved backwards
-
-       Do not issue a reward.
-       This avoids duplicate rewards caused by clock rollback.
-    ----------------------------------------------------- */
-
-    if (difference < 0) {
-        return {
-            rewardable: false,
-
-            reason:
-                "CLOCK_ROLLBACK",
-
-            streak:
-                login.streak,
-
-            cycleDay:
-                login.cycleDay,
-
-            interrupted: false,
-
-            cycleReset: false
-        };
-    }
-
-
-    /* -----------------------------------------------------
-       Consecutive next day
-    ----------------------------------------------------- */
-
-    if (difference === 1) {
-        const nextStreak =
-            login.streak + 1;
-
-        let nextCycleDay =
-            login.cycleDay + 1;
-
-        let cycleReset =
-            false;
-
-        if (
-            login.cycleDay <= 0 ||
-            login.cycleDay >=
-                LOGIN_CYCLE_LENGTH
-        ) {
-            nextCycleDay = 1;
-            cycleReset = true;
-        }
-
-        return {
-            rewardable: true,
-
-            reason:
-                "CONSECUTIVE_LOGIN",
-
-            streak:
-                nextStreak,
-
-            cycleDay:
-                nextCycleDay,
-
-            interrupted: false,
-
-            cycleReset
-        };
-    }
-
-
-    /* -----------------------------------------------------
-       Missed one or more days
-    ----------------------------------------------------- */
-
-    return {
-        rewardable: true,
-
-        reason:
-            "STREAK_INTERRUPTED",
-
-        streak: 1,
-
-        cycleDay: 1,
-
-        interrupted: true,
-
-        cycleReset: true
-    };
-}
-
-
-/* =========================================================
-   SAVE LOGIN STATE
-========================================================= */
-
-function saveLoginState({
-    today,
-    streak,
-    cycleDay
-}) {
-    return updateData(
-        (data) => {
-            data.login = {
-                lastLoginDate:
-                    today,
-
-                streak,
-
-                cycleDay
-            };
-        }
-    );
-}
-
-
-/* =========================================================
-   DAILY REWARD
-========================================================= */
-
-function grantDailyLoginReward({
-    today,
-    streak,
-    cycleDay
-}) {
-    return credit(
-        DAILY_LOGIN_REWARD,
-        {
-            type:
-                WALLET_TRANSACTION_TYPES
-                    .DAILY_LOGIN,
-
-            metadata: {
-                source:
-                    "DAILY_LOGIN",
-
-                date:
-                    today,
-
-                streak,
-
-                cycleDay
-            }
-        }
-    );
-}
-
-
-/* =========================================================
-   DAY 7 BONUS
-========================================================= */
-
-function grantDaySevenBonus({
-    today,
-    streak,
-    cycleDay
-}) {
     if (
-        cycleDay !==
-        LOGIN_CYCLE_LENGTH
+        difference === null
     ) {
         return {
-            success: false,
-            granted: false,
-            reason:
-                "NOT_DAY_SEVEN"
+            sameDay:
+                false,
+
+            consecutive:
+                false,
+
+            reset:
+                true,
+
+            dayDifference:
+                null
         };
     }
 
-    const transaction =
-        credit(
-            DAY_SEVEN_BONUS,
-            {
-                type:
-                    WALLET_TRANSACTION_TYPES
-                        .STREAK_BONUS,
-
-                metadata: {
-                    source:
-                        "DAY_SEVEN_BONUS",
-
-                    date:
-                        today,
-
-                    streak,
-
-                    cycleDay
-                }
-            }
-        );
 
     if (
-        !transaction.success
+        difference === 0
     ) {
         return {
-            success: false,
-            granted: false,
-            reason:
-                transaction.reason
+            sameDay:
+                true,
+
+            consecutive:
+                false,
+
+            reset:
+                false,
+
+            dayDifference:
+                0
         };
     }
 
+
+    if (
+        difference === 1
+    ) {
+        return {
+            sameDay:
+                false,
+
+            consecutive:
+                true,
+
+            reset:
+                false,
+
+            dayDifference:
+                1
+        };
+    }
+
+
+    /*
+     difference > 1:
+         missed at least one calendar day
+
+     difference < 0:
+         system clock moved backwards
+
+     Both cases are treated conservatively as a reset.
+    */
+
     return {
-        success: true,
-        granted: true,
+        sameDay:
+            false,
 
-        amount:
-            DAY_SEVEN_BONUS,
+        consecutive:
+            false,
 
-        transaction
+        reset:
+            true,
+
+        dayDifference:
+            difference
     };
 }
 
@@ -630,170 +593,217 @@ function grantDaySevenBonus({
 /* =========================================================
    PROCESS LOGIN
 
-   This is the main entry point.
+   Canonical login entry point.
 
-   Recommended usage:
-       const result = processLogin();
+   Safe to call repeatedly on the same day.
 
-   Call once when the game/lobby initializes.
+   First login:
+       initializePlayer()
+           +10,000
+
+       daily login
+           +1,000
+
+       totalReward
+           11,000
 ========================================================= */
 
 function processLogin(
-    now = new Date()
+    now =
+        new Date()
 ) {
+
     const today =
-        getLocalDateString(now);
-
-
-    /* -----------------------------------------------------
-       Step 1
-       Ensure player profile exists.
-    ----------------------------------------------------- */
-
-    const initialization =
-        initializePlayerData();
-
-
-    /* -----------------------------------------------------
-       Step 2
-       Claim first-login bonus.
-
-       claimFirstLoginBonus() itself guarantees this can
-       only happen once.
-    ----------------------------------------------------- */
-
-    const firstLoginBonus =
-        claimFirstLoginBonus();
-
-
-    /* -----------------------------------------------------
-       Step 3
-       Read latest login state.
-    ----------------------------------------------------- */
-
-    const data =
-        getData();
-
-    const currentLogin =
-        sanitizeLoginState(
-            data.login
-        );
-
-    const next =
-        calculateNextLoginState(
-            currentLogin,
-            today
+        getLocalDateKey(
+            now
         );
 
 
-    /* -----------------------------------------------------
-       Same-day login / clock rollback
-    ----------------------------------------------------- */
-
-    if (!next.rewardable) {
-        return {
-            success: true,
-
-            newPlayer:
-                initialization.created,
-
-            dailyRewardGranted:
-                false,
-
-            streakBonusGranted:
-                false,
-
-            firstLoginBonusGranted:
-                firstLoginBonus
-                    .claimed === true,
-
-            firstLoginBonusAmount:
-                firstLoginBonus
-                    .claimed === true
-                    ? firstLoginBonus.amount
-                    : 0,
-
-            dailyRewardAmount: 0,
-            streakBonusAmount: 0,
-
-            totalReward:
-                firstLoginBonus
-                    .claimed === true
-                    ? firstLoginBonus.amount
-                    : 0,
-
-            reason:
-                next.reason,
-
-            today,
-
-            streak:
-                next.streak,
-
-            cycleDay:
-                next.cycleDay,
-
-            interrupted:
-                next.interrupted,
-
-            cycleReset:
-                next.cycleReset,
-
-            balance:
-                getCurrentBalanceSafely()
-        };
-    }
-
-
-    /* -----------------------------------------------------
-       Step 4
-       Save today's login state before issuing rewards.
-
-       This makes same-day duplicate calls much less likely
-       to issue the daily reward twice.
-    ----------------------------------------------------- */
-
-    const loginSaveResult =
-        saveLoginState({
-            today,
-
-            streak:
-                next.streak,
-
-            cycleDay:
-                next.cycleDay
-        });
-
-    if (!loginSaveResult) {
+    if (!today) {
         return {
             success: false,
 
             reason:
-                "LOGIN_STATE_SAVE_FAILED",
+                "INVALID_DATE",
 
-            today
+            totalReward:
+                0
         };
     }
 
 
     /* -----------------------------------------------------
-       Step 5
-       Grant daily +1,000
+       Step 1:
+       Ensure local player exists.
     ----------------------------------------------------- */
 
-    const dailyReward =
-        grantDailyLoginReward({
-            today,
+    const initialization =
+        initializePlayer();
 
-            streak:
-                next.streak,
-
-            cycleDay:
-                next.cycleDay
-        });
 
     if (
-        !dailyReward.success
+        !initialization.success
+    ) {
+        return {
+            success: false,
+
+            reason:
+                initialization.reason,
+
+            totalReward:
+                0
+        };
+    }
+
+
+    /* -----------------------------------------------------
+       Step 2:
+       Read latest login state AFTER initialization.
+    ----------------------------------------------------- */
+
+    const current =
+        getLoginData();
+
+
+    const transition =
+        determineLoginTransition(
+            current.lastLoginDate,
+            today
+        );
+
+
+    /* =====================================================
+       SAME DAY
+
+       No additional reward.
+    ====================================================== */
+
+    if (
+        transition.sameDay
+    ) {
+
+        const result = {
+
+            success: true,
+
+            claimed:
+                false,
+
+            initialized:
+                initialization.initialized,
+
+            reason:
+                "ALREADY_CLAIMED_TODAY",
+
+            initialBonus:
+                initialization.initialBonus,
+
+            dailyReward:
+                0,
+
+            streakBonus:
+                0,
+
+            totalReward:
+                initialization.initialBonus,
+
+            date:
+                today,
+
+            streak:
+                current.streak,
+
+            cycleDay:
+                current.cycleDay,
+
+            totalLoginDays:
+                current.totalLoginDays
+        };
+
+
+        notifyLoginListeners({
+
+            type:
+                LOGIN_EVENT_TYPES
+                    .ALREADY_CLAIMED,
+
+            ...result,
+
+            timestamp:
+                Date.now()
+        });
+
+
+        return result;
+    }
+
+
+    /* =====================================================
+       NEW LOGIN DAY
+    ====================================================== */
+
+    const nextStreak =
+        transition.consecutive
+            ? current.streak + 1
+            : 1;
+
+
+    const nextCycleDay =
+        transition.consecutive
+            ? calculateCycleDay(
+                nextStreak
+            )
+            : 1;
+
+
+    const nextTotalLoginDays =
+        current.totalLoginDays +
+        1;
+
+
+    const dailyReward =
+        LOGIN_CONFIG
+            .DAILY_REWARD;
+
+
+    const streakBonus =
+        nextCycleDay ===
+            LOGIN_CONFIG
+                .CYCLE_LENGTH
+            ? LOGIN_CONFIG
+                .STREAK_BONUS
+            : 0;
+
+
+    /*
+     Login state is written only after reward operations
+     succeed.
+
+     This prevents the day from being marked claimed when the
+     Wallet credit failed.
+    */
+
+
+    /* -----------------------------------------------------
+       Step 3:
+       Daily +1,000
+    ----------------------------------------------------- */
+
+    const dailyResult =
+        creditDailyLogin(
+            dailyReward,
+            {
+                date:
+                    today,
+
+                cycleDay:
+                    nextCycleDay
+            }
+        );
+
+
+    if (
+        !dailyResult.success
     ) {
         return {
             success: false,
@@ -801,247 +811,611 @@ function processLogin(
             reason:
                 "DAILY_REWARD_FAILED",
 
-            today,
+            walletReason:
+                dailyResult.reason,
 
-            streak:
-                next.streak,
+            initialBonus:
+                initialization.initialBonus,
 
-            cycleDay:
-                next.cycleDay
+            dailyReward:
+                0,
+
+            streakBonus:
+                0,
+
+            totalReward:
+                initialization.initialBonus
         };
     }
 
 
     /* -----------------------------------------------------
-       Step 6
-       Day 7 additional +7,777
+       Step 4:
+       Day 7 extra +7,777
     ----------------------------------------------------- */
 
-    let streakBonus = {
-        success: true,
-        granted: false,
-        amount: 0
-    };
+    let streakBonusResult =
+        null;
+
 
     if (
-        next.cycleDay ===
-        LOGIN_CYCLE_LENGTH
+        streakBonus > 0
     ) {
-        streakBonus =
-            grantDaySevenBonus({
-                today,
 
-                streak:
-                    next.streak,
+        streakBonusResult =
+            creditLoginStreakBonus(
+                streakBonus,
+                {
+                    date:
+                        today,
 
-                cycleDay:
-                    next.cycleDay
-            });
+                    cycleDay:
+                        nextCycleDay
+                }
+            );
+
 
         if (
-            !streakBonus.success
+            !streakBonusResult.success
         ) {
+
+            /*
+             IMPORTANT:
+             At this point daily +1,000 was already credited.
+
+             Refund/rollback by negative Wallet operations is
+             intentionally avoided because wallet.js rejects
+             negative credits.
+
+             Instead, do NOT mark login as claimed. The next
+             processLogin() call can retry.
+
+             In normal Local Storage operation, failure
+             between these two writes is extremely rare.
+            */
+
             return {
                 success: false,
 
                 reason:
                     "STREAK_BONUS_FAILED",
 
-                today,
+                walletReason:
+                    streakBonusResult
+                        .reason,
 
-                streak:
-                    next.streak,
+                partialReward:
+                    dailyReward,
 
-                cycleDay:
-                    next.cycleDay
+                initialBonus:
+                    initialization.initialBonus,
+
+                dailyReward,
+
+                streakBonus:
+                    0,
+
+                totalReward:
+                    initialization.initialBonus +
+                    dailyReward
             };
         }
     }
 
 
     /* -----------------------------------------------------
-       Result
+       Step 5:
+       Persist claimed login state.
     ----------------------------------------------------- */
 
-    const firstLoginAmount =
-        firstLoginBonus.claimed ===
-        true
-            ? firstLoginBonus.amount
-            : 0;
+    const rewardTotalForDay =
+        dailyReward +
+        streakBonus;
 
-    const streakBonusAmount =
-        streakBonus.granted
-            ? streakBonus.amount
-            : 0;
 
-    const totalReward =
-        firstLoginAmount +
-        DAILY_LOGIN_REWARD +
-        streakBonusAmount;
+    const timestamp =
+        new Date()
+            .toISOString();
 
-    return {
-        success: true,
 
-        newPlayer:
-            initialization.created,
+    const savedLogin =
+        updateData(
+            (data) => {
 
-        firstLoginBonusGranted:
-            firstLoginBonus
-                .claimed === true,
+                data.login.lastLoginDate =
+                    today;
 
-        dailyRewardGranted:
-            true,
 
-        streakBonusGranted:
-            streakBonus.granted,
+                data.login.streak =
+                    nextStreak;
 
-        firstLoginBonusAmount:
-            firstLoginAmount,
 
-        dailyRewardAmount:
-            DAILY_LOGIN_REWARD,
+                data.login.cycleDay =
+                    nextCycleDay;
 
-        streakBonusAmount,
 
-        totalReward,
+                data.login.totalLoginDays =
+                    nextTotalLoginDays;
 
-        reason:
-            next.reason,
 
-        today,
+                data.login.lastReward =
+                    rewardTotalForDay;
+
+
+                data.login.lastRewardAt =
+                    timestamp;
+            }
+        );
+
+
+    if (!savedLogin) {
+
+        return {
+            success: false,
+
+            reason:
+                "LOGIN_STATE_WRITE_FAILED",
+
+            partialReward:
+                rewardTotalForDay,
+
+            initialBonus:
+                initialization.initialBonus,
+
+            dailyReward,
+
+            streakBonus,
+
+            totalReward:
+                initialization.initialBonus +
+                rewardTotalForDay
+        };
+    }
+
+
+    /* =====================================================
+       EVENTS
+    ====================================================== */
+
+    if (
+        transition.reset &&
+        current.lastLoginDate
+    ) {
+
+        notifyLoginListeners({
+
+            type:
+                LOGIN_EVENT_TYPES
+                    .STREAK_RESET,
+
+            previousStreak:
+                current.streak,
+
+            streak:
+                nextStreak,
+
+            cycleDay:
+                nextCycleDay,
+
+            date:
+                today,
+
+            timestamp:
+                Date.now()
+        });
+    }
+
+
+    notifyLoginListeners({
+
+        type:
+            LOGIN_EVENT_TYPES
+                .DAILY_REWARD,
+
+        date:
+            today,
 
         streak:
-            next.streak,
+            nextStreak,
 
         cycleDay:
-            next.cycleDay,
+            nextCycleDay,
 
-        interrupted:
-            next.interrupted,
+        reward:
+            dailyReward,
 
-        cycleReset:
-            next.cycleReset,
+        transactionId:
+            dailyResult
+                .transactionId,
 
-        balance:
-            dailyReward.balanceAfter !==
-            undefined
-                ? (
-                    streakBonus.granted
-                        ? streakBonus
-                            .transaction
-                            .balanceAfter
-                        : dailyReward
-                            .balanceAfter
-                )
-                : getCurrentBalanceSafely()
+        timestamp:
+            Date.now()
+    });
+
+
+    if (
+        streakBonus > 0
+    ) {
+
+        notifyLoginListeners({
+
+            type:
+                LOGIN_EVENT_TYPES
+                    .STREAK_BONUS,
+
+            date:
+                today,
+
+            streak:
+                nextStreak,
+
+            cycleDay:
+                nextCycleDay,
+
+            reward:
+                streakBonus,
+
+            transactionId:
+                streakBonusResult
+                    ?.transactionId ??
+                null,
+
+            timestamp:
+                Date.now()
+        });
+    }
+
+
+    /* =====================================================
+       RESULT
+    ====================================================== */
+
+    return {
+
+        success: true,
+
+        claimed:
+            true,
+
+        initialized:
+            initialization.initialized,
+
+        reset:
+            transition.reset,
+
+        consecutive:
+            transition.consecutive,
+
+        initialBonus:
+            initialization.initialBonus,
+
+        dailyReward,
+
+        streakBonus,
+
+        /*
+         Reward granted during THIS processLogin() call.
+
+         First login:
+             10,000 + 1,000 = 11,000
+
+         Normal day:
+             1,000
+
+         Day 7:
+             1,000 + 7,777 = 8,777
+        */
+
+        totalReward:
+            initialization.initialBonus +
+            dailyReward +
+            streakBonus,
+
+        date:
+            today,
+
+        streak:
+            nextStreak,
+
+        cycleDay:
+            nextCycleDay,
+
+        totalLoginDays:
+            nextTotalLoginDays
     };
 }
 
 
 /* =========================================================
-   CURRENT BALANCE
+   GET LOGIN STATUS
 
-   Avoid importing getBalance solely for one small fallback.
+   Read-only UI-oriented summary.
 ========================================================= */
 
-function getCurrentBalanceSafely() {
-    const data =
-        getData();
+function getLoginStatus(
+    now =
+        new Date()
+) {
+
+    const playerInitialized =
+        isPlayerInitialized();
+
+
+    const login =
+        getLoginData();
+
+
+    const today =
+        getLocalDateKey(
+            now
+        );
+
+
+    const transition =
+        determineLoginTransition(
+            login.lastLoginDate,
+            today
+        );
+
+
+    const claimedToday =
+        Boolean(
+            today &&
+            login.lastLoginDate ===
+                today
+        );
+
+
+    let projectedStreak =
+        login.streak;
+
+
+    let projectedCycleDay =
+        login.cycleDay;
+
+
+    /*
+     If today has not yet been claimed, expose what today
+     WOULD become after processLogin().
+    */
 
     if (
-        data.wallet &&
-        typeof data.wallet.balance ===
-        "number" &&
-        Number.isFinite(
-            data.wallet.balance
-        )
+        !claimedToday
     ) {
-        return data.wallet.balance;
+
+        if (
+            transition.consecutive
+        ) {
+
+            projectedStreak =
+                login.streak +
+                1;
+
+
+            projectedCycleDay =
+                calculateCycleDay(
+                    projectedStreak
+                );
+
+        } else {
+
+            projectedStreak =
+                1;
+
+
+            projectedCycleDay =
+                1;
+        }
     }
 
-    return 0;
+
+    const projectedDailyReward =
+        LOGIN_CONFIG
+            .DAILY_REWARD;
+
+
+    const projectedStreakBonus =
+        projectedCycleDay ===
+            LOGIN_CONFIG
+                .CYCLE_LENGTH
+            ? LOGIN_CONFIG
+                .STREAK_BONUS
+            : 0;
+
+
+    return {
+
+        playerInitialized,
+
+        claimedToday,
+
+        lastLoginDate:
+            login.lastLoginDate,
+
+        streak:
+            claimedToday
+                ? login.streak
+                : projectedStreak,
+
+        cycleDay:
+            claimedToday
+                ? login.cycleDay
+                : projectedCycleDay,
+
+        totalLoginDays:
+            login.totalLoginDays,
+
+        lastReward:
+            login.lastReward,
+
+        lastRewardAt:
+            login.lastRewardAt,
+
+        today:
+            today,
+
+        dailyReward:
+            projectedDailyReward,
+
+        streakBonus:
+            projectedStreakBonus,
+
+        projectedReward:
+            projectedDailyReward +
+            projectedStreakBonus,
+
+        nextCycleDay:
+            projectedCycleDay >=
+                LOGIN_CONFIG
+                    .CYCLE_LENGTH
+                ? 1
+                : projectedCycleDay + 1
+    };
 }
 
 
 /* =========================================================
-   LOGIN REWARD PREVIEW
+   GET LOGIN REWARD PREVIEW
 
-   Does not modify storage.
+   Pure read helper.
 
-   Useful for UI.
+   Does NOT issue rewards.
 ========================================================= */
 
 function getLoginRewardPreview(
-    now = new Date()
+    now =
+        new Date()
 ) {
-    const today =
-        getLocalDateString(now);
 
-    const data =
-        getData();
-
-    const currentLogin =
-        sanitizeLoginState(
-            data.login
+    const status =
+        getLoginStatus(
+            now
         );
 
-    const next =
-        calculateNextLoginState(
-            currentLogin,
-            today
-        );
 
-    if (!next.rewardable) {
+    if (
+        status.claimedToday
+    ) {
         return {
-            claimable: false,
 
-            today,
+            claimable:
+                false,
 
             reason:
-                next.reason,
-
-            streak:
-                next.streak,
+                "ALREADY_CLAIMED_TODAY",
 
             cycleDay:
-                next.cycleDay,
+                status.cycleDay,
 
-            dailyReward: 0,
+            dailyReward:
+                LOGIN_CONFIG
+                    .DAILY_REWARD,
 
-            streakBonus: 0,
+            streakBonus:
+                status.cycleDay ===
+                    LOGIN_CONFIG
+                        .CYCLE_LENGTH
+                    ? LOGIN_CONFIG
+                        .STREAK_BONUS
+                    : 0,
 
-            totalReward: 0
+            reward:
+                0
         };
     }
 
-    const streakBonus =
-        next.cycleDay ===
-        LOGIN_CYCLE_LENGTH
-            ? DAY_SEVEN_BONUS
-            : 0;
 
     return {
-        claimable: true,
 
-        today,
-
-        reason:
-            next.reason,
-
-        streak:
-            next.streak,
+        claimable:
+            true,
 
         cycleDay:
-            next.cycleDay,
+            status.cycleDay,
 
         dailyReward:
-            DAILY_LOGIN_REWARD,
+            LOGIN_CONFIG
+                .DAILY_REWARD,
 
-        streakBonus,
+        streakBonus:
+            status.cycleDay ===
+                LOGIN_CONFIG
+                    .CYCLE_LENGTH
+                ? LOGIN_CONFIG
+                    .STREAK_BONUS
+                : 0,
 
-        totalReward:
-            DAILY_LOGIN_REWARD +
-            streakBonus
+        reward:
+            status.projectedReward
+    };
+}
+
+
+/* =========================================================
+   RESET LOGIN DATA
+
+   Development/testing helper.
+
+   Does NOT reset:
+   - player.initialized
+   - wallet balance
+
+   Therefore it should not be exposed as a normal player UI
+   action.
+========================================================= */
+
+function resetLoginData() {
+
+    const previous =
+        getLoginData();
+
+
+    const saved =
+        updateData(
+            (data) => {
+
+                data.login = {
+
+                    lastLoginDate:
+                        null,
+
+                    streak:
+                        0,
+
+                    cycleDay:
+                        0,
+
+                    totalLoginDays:
+                        0,
+
+                    lastReward:
+                        0,
+
+                    lastRewardAt:
+                        null
+                };
+            }
+        );
+
+
+    if (!saved) {
+        return {
+            success: false,
+
+            reason:
+                "STORAGE_WRITE_FAILED"
+        };
+    }
+
+
+    return {
+
+        success: true,
+
+        previous,
+
+        login:
+            getLoginData()
     };
 }
 
@@ -1051,15 +1425,21 @@ function getLoginRewardPreview(
 ========================================================= */
 
 export {
-    DAILY_LOGIN_REWARD,
-    DAY_SEVEN_BONUS,
-    LOGIN_CYCLE_LENGTH,
+    LOGIN_CONFIG,
+    LOGIN_EVENT_TYPES,
 
-    getLocalDateString,
-    getCalendarDayDifference,
+    calculateCycleDay,
 
+    isPlayerInitialized,
+    initializePlayer,
+
+    processLogin,
+
+    getLoginData,
     getLoginStatus,
     getLoginRewardPreview,
 
-    processLogin
+    resetLoginData,
+
+    subscribeToLogin
 };
