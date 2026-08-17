@@ -2,30 +2,25 @@
    CG FLIGHT
    js/game/settlement.js
 
-   Round settlement layer.
+   Final round settlement controller.
 
    Responsibilities:
-   - Settle a round after crash
-   - Mark active uncashout bets as losses
-   - Handle cashed-out wins
-   - Handle no-bet rounds
-   - Handle cancelled/refunded bets
-   - Transition CRASHED -> SETTLING -> ENDED
-   - Produce normalized settlement summary
+   - Determine final round result
+   - Settle normal WIN / LOSS / NO_BET rounds
+   - Refund unsettled bets when a round must be aborted
+   - Build canonical round record
+   - Complete state.js settlement
+   - Persist History
+   - Record Statistics
    - Prevent duplicate settlement
+   - Publish settlement events
 
    IMPORTANT:
-   This module does NOT:
-   - Generate crash multipliers
-   - Run flight animation
-   - Place bets
-   - Perform cashout
-   - Persist history
-   - Update statistics
+   Normal WIN money is already credited by cashout.js.
 
-   history.js and statistics.js will consume the settlement
-   result later.
+   settlement.js must NOT credit a successful Cash Out again.
 ========================================================= */
+
 
 import {
     GAME_PHASES,
@@ -33,29 +28,34 @@ import {
     ROUND_RESULT,
 
     getState,
-    getPhase,
 
-    setPhase,
+    markBetRefunded,
 
-    markBetLost,
-    markNoBetResult,
-    markSettlementCompleted,
-
-    getRoundSummary
+    beginSettlement,
+    completeSettlement
 } from "./state.js";
 
+
 import {
+    creditSettlementRefund
+} from "../core/wallet.js";
+
+
+import {
+    addHistoryEntry
+} from "./history.js";
+
+
+import {
+    recordRoundStatistics
+} from "./statistics.js";
+
+
+import {
+    clone,
     roundTo,
-    clone
+    createId
 } from "../core/utils.js";
-
-import {
-    playWin
-} from "../core/audio.js";
-
-import {
-    subscribeToFlight
-} from "./flight.js";
 
 
 /* =========================================================
@@ -64,27 +64,48 @@ import {
 
 const SETTLEMENT_CONFIG = Object.freeze({
 
-    /*
-     Numeric precision used in normalized settlement output.
-    */
-    DECIMALS: 2
+    DECIMALS:
+        2
 });
 
 
 /* =========================================================
-   INTERNAL RUNTIME
+   SETTLEMENT EVENT TYPES
+========================================================= */
+
+const SETTLEMENT_EVENT_TYPES =
+    Object.freeze({
+
+        SETTLEMENT_STARTED:
+            "SETTLEMENT_STARTED",
+
+        SETTLEMENT_COMPLETED:
+            "SETTLEMENT_COMPLETED",
+
+        SETTLEMENT_REJECTED:
+            "SETTLEMENT_REJECTED",
+
+        ROUND_REFUNDED:
+            "ROUND_REFUNDED"
+    });
+
+
+/* =========================================================
+   RUNTIME
 ========================================================= */
 
 const runtime = {
 
-    settling: false,
+    processing:
+        false,
 
-    lastSettlement: null
+    settledRoundIds:
+        new Set()
 };
 
 
 /* =========================================================
-   SETTLEMENT LISTENERS
+   LISTENERS
 ========================================================= */
 
 const settlementListeners =
@@ -94,6 +115,7 @@ const settlementListeners =
 function subscribeToSettlement(
     listener
 ) {
+
     if (
         typeof listener !==
         "function"
@@ -103,11 +125,14 @@ function subscribeToSettlement(
         );
     }
 
+
     settlementListeners.add(
         listener
     );
 
+
     return function unsubscribe() {
+
         settlementListeners.delete(
             listener
         );
@@ -116,31 +141,36 @@ function subscribeToSettlement(
 
 
 /* =========================================================
-   EMIT SETTLEMENT EVENT
+   NOTIFY
 ========================================================= */
 
-function emitSettlementEvent(
-    type,
-    payload = {}
+function notifySettlementListeners(
+    event
 ) {
-    const event = {
-        type,
+
+    const payload = {
+
+        ...clone(event),
 
         timestamp:
-            Date.now(),
-
-        ...payload
+            event.timestamp ??
+            Date.now()
     };
+
 
     for (
         const listener
         of settlementListeners
     ) {
+
         try {
+
             listener(
-                clone(event)
+                payload
             );
+
         } catch (error) {
+
             console.error(
                 "[CG Flight] Settlement listener failed:",
                 error
@@ -151,14 +181,16 @@ function emitSettlementEvent(
 
 
 /* =========================================================
-   NUMBER NORMALIZATION
+   MONEY NORMALIZER
 ========================================================= */
 
 function normalizeMoney(
     value
 ) {
+
     const numeric =
         Number(value);
+
 
     if (
         !Number.isFinite(
@@ -168,236 +200,330 @@ function normalizeMoney(
         return 0;
     }
 
-    return roundTo(
-        numeric,
-        SETTLEMENT_CONFIG.DECIMALS
-    );
-}
-
-
-function normalizeMultiplier(
-    value
-) {
-    const numeric =
-        Number(value);
-
-    if (
-        !Number.isFinite(
-            numeric
-        ) ||
-        numeric < 0
-    ) {
-        return 0;
-    }
 
     return roundTo(
         numeric,
-        2
+        SETTLEMENT_CONFIG
+            .DECIMALS
     );
 }
 
 
 /* =========================================================
-   DETERMINE OUTCOME
+   DETERMINE NORMAL ROUND RESULT
 
-   Reads current round state and ensures the round has a
-   final result.
+   Normal round outcomes:
+
+   CASHED_OUT
+       -> WIN
+
+   LOST
+       -> LOSS
+
+   NONE / CANCELLED
+       -> NO_BET
+
+   REFUNDED
+       -> REFUND
 ========================================================= */
 
-function determineRoundOutcome() {
-    const state =
-        getState();
+function determineRoundResult(
+    state =
+        getState()
+) {
 
-    const bet =
-        state.bet;
-
-
-    /* -----------------------------------------------------
-       Cashed out successfully.
-    ----------------------------------------------------- */
-
-    if (
-        bet.status ===
-            BET_STATUS.CASHED_OUT ||
-        state.cashout.completed
+    switch (
+        state.bet.status
     ) {
-        return {
-            success: true,
 
-            result:
-                ROUND_RESULT.WIN
-        };
+        case BET_STATUS.CASHED_OUT:
+
+            return ROUND_RESULT.WIN;
+
+
+        case BET_STATUS.LOST:
+
+            return ROUND_RESULT.LOSS;
+
+
+        case BET_STATUS.REFUNDED:
+
+            return ROUND_RESULT.REFUND;
+
+
+        case BET_STATUS.NONE:
+
+        case BET_STATUS.CANCELLED:
+
+            return ROUND_RESULT.NO_BET;
+
+
+        default:
+
+            return null;
     }
-
-
-    /* -----------------------------------------------------
-       Active bet at crash = loss.
-    ----------------------------------------------------- */
-
-    if (
-        bet.status ===
-        BET_STATUS.ACTIVE
-    ) {
-        const result =
-            markBetLost();
-
-        if (!result.success) {
-            return {
-                success: false,
-
-                reason:
-                    result.reason
-            };
-        }
-
-        return {
-            success: true,
-
-            result:
-                ROUND_RESULT.LOSS
-        };
-    }
-
-
-    /* -----------------------------------------------------
-       No bet placed.
-    ----------------------------------------------------- */
-
-    if (
-        bet.status ===
-        BET_STATUS.NONE
-    ) {
-        const success =
-            markNoBetResult();
-
-        if (!success) {
-            return {
-                success: false,
-
-                reason:
-                    "NO_BET_RESULT_FAILED"
-            };
-        }
-
-        return {
-            success: true,
-
-            result:
-                ROUND_RESULT.NO_BET
-        };
-    }
-
-
-    /* -----------------------------------------------------
-       Cancelled bet.
-
-       markBetCancelled() already sets result to REFUND.
-    ----------------------------------------------------- */
-
-    if (
-        bet.status ===
-        BET_STATUS.CANCELLED ||
-        bet.status ===
-        BET_STATUS.REFUNDED
-    ) {
-        return {
-            success: true,
-
-            result:
-                ROUND_RESULT.REFUND
-        };
-    }
-
-
-    /* -----------------------------------------------------
-       PLACED bet should normally have been activated before
-       flight starts.
-
-       If it survives until settlement, treat this as an
-       inconsistent state instead of silently charging the
-       player as a loss.
-    ----------------------------------------------------- */
-
-    if (
-        bet.status ===
-        BET_STATUS.PLACED
-    ) {
-        return {
-            success: false,
-
-            reason:
-                "UNACTIVATED_BET_AT_SETTLEMENT"
-        };
-    }
-
-
-    return {
-        success: false,
-
-        reason:
-            "UNKNOWN_BET_STATE",
-
-        betStatus:
-            bet.status
-    };
 }
 
 
 /* =========================================================
-   BUILD SETTLEMENT RECORD
-
-   Produces a normalized object suitable for:
-   - statistics.js
-   - history.js
-   - game UI
+   CALCULATE FINANCIAL RESULT
 ========================================================= */
 
-function buildSettlementRecord(
-    state = getState()
+function calculateFinancialResult(
+    state,
+    result
 ) {
-    const wagered =
+
+    const betAmount =
         normalizeMoney(
-            state.result.wagered
+            state.bet.amount
         );
 
-    const returned =
-        normalizeMoney(
-            state.result.returned
+
+    switch (result) {
+
+        /* -------------------------------------------------
+           WIN
+
+           Bet was already deducted when placed.
+           Full return was already credited by cashout.js.
+        -------------------------------------------------- */
+
+        case ROUND_RESULT.WIN: {
+
+            const returned =
+                normalizeMoney(
+                    state.cashout.amount
+                );
+
+
+            return {
+
+                wagered:
+                    betAmount,
+
+                returned,
+
+                profit:
+                    normalizeMoney(
+                        returned -
+                        betAmount
+                    )
+            };
+        }
+
+
+        /* -------------------------------------------------
+           LOSS
+
+           Bet was deducted and never returned.
+        -------------------------------------------------- */
+
+        case ROUND_RESULT.LOSS:
+
+            return {
+
+                wagered:
+                    betAmount,
+
+                returned:
+                    0,
+
+                profit:
+                    normalizeMoney(
+                        -betAmount
+                    )
+            };
+
+
+        /* -------------------------------------------------
+           REFUND
+
+           Original wager is returned in full.
+           Profit is zero.
+        -------------------------------------------------- */
+
+        case ROUND_RESULT.REFUND:
+
+            return {
+
+                wagered:
+                    betAmount,
+
+                returned:
+                    betAmount,
+
+                profit:
+                    0
+            };
+
+
+        /* -------------------------------------------------
+           NO BET
+        -------------------------------------------------- */
+
+        case ROUND_RESULT.NO_BET:
+
+        default:
+
+            return {
+
+                wagered:
+                    0,
+
+                returned:
+                    0,
+
+                profit:
+                    0
+            };
+    }
+}
+
+
+/* =========================================================
+   BUILD ROUND RECORD
+
+   This is the canonical persisted History representation.
+========================================================= */
+
+function buildRoundRecord(
+    state,
+    {
+        result,
+        financial,
+        recordId = null,
+        recordedAt = null
+    }
+) {
+
+    const finalRecordId =
+        recordId ??
+        createId(
+            "record"
         );
 
-    const profit =
-        normalizeMoney(
-            state.result.profit
-        );
+
+    const finalRecordedAt =
+        recordedAt ??
+        new Date()
+            .toISOString();
 
 
     return {
+
+        /* -------------------------------------------------
+           Identity
+        -------------------------------------------------- */
+
+        recordId:
+            finalRecordId,
 
         roundId:
             state.roundId,
 
-        result:
-            state.result.status,
-
-        phase:
-            state.phase,
-
-        crashMultiplier:
-            normalizeMultiplier(
-                state.crashMultiplier
-            ),
-
-        finalMultiplier:
-            normalizeMultiplier(
-                state.multiplier
-            ),
+        recordedAt:
+            finalRecordedAt,
 
 
         /* -------------------------------------------------
-           Bet
+           Result
+        -------------------------------------------------- */
+
+        result,
+
+
+        /* -------------------------------------------------
+           Crash
+        -------------------------------------------------- */
+
+        crashMultiplier:
+            state.flight
+                .crashMultiplier !==
+            null
+                ? roundTo(
+                    state.flight
+                        .crashMultiplier,
+                    2
+                )
+                : null,
+
+
+        /* -------------------------------------------------
+           Bet summary
+        -------------------------------------------------- */
+
+        betAmount:
+            normalizeMoney(
+                state.bet.amount
+            ),
+
+        hasBet:
+            [
+                BET_STATUS.ACTIVE,
+                BET_STATUS.CASHED_OUT,
+                BET_STATUS.LOST,
+                BET_STATUS.REFUNDED
+            ].includes(
+                state.bet.status
+            ),
+
+        betStatus:
+            state.bet.status,
+
+
+        /* -------------------------------------------------
+           Cash Out summary
+
+           Fields here are intentionally flat because
+           History table/filtering reads these frequently.
+        -------------------------------------------------- */
+
+        cashoutMultiplier:
+            state.cashout.completed &&
+            state.cashout.multiplier !==
+                null
+                ? roundTo(
+                    state.cashout
+                        .multiplier,
+                    2
+                )
+                : null,
+
+        automaticCashout:
+            state.cashout.completed
+                ? Boolean(
+                    state.cashout
+                        .automatic
+                )
+                : false,
+
+        cashoutType:
+            state.cashout.type,
+
+
+        /* -------------------------------------------------
+           Financial summary
+        -------------------------------------------------- */
+
+        wagered:
+            financial.wagered,
+
+        returned:
+            financial.returned,
+
+        profit:
+            financial.profit,
+
+
+        /* -------------------------------------------------
+           Full detail
+
+           Kept for getPlayerRoundDetail().
         -------------------------------------------------- */
 
         bet: {
+
             status:
                 state.bet.status,
 
@@ -415,16 +541,21 @@ function buildSettlementRecord(
             cancelledAt:
                 state.bet.cancelledAt,
 
+            refundedAt:
+                state.bet.refundedAt,
+
             transactionId:
-                state.bet.transactionId
+                state.bet
+                    .transactionId,
+
+            refundTransactionId:
+                state.bet
+                    .refundTransactionId
         },
 
 
-        /* -------------------------------------------------
-           Auto Cash Out
-        -------------------------------------------------- */
-
         autoCashout: {
+
             enabled:
                 Boolean(
                     state.autoCashout
@@ -433,21 +564,19 @@ function buildSettlementRecord(
 
             targetMultiplier:
                 state.autoCashout
-                    .targetMultiplier ===
-                    null
-                    ? null
-                    : normalizeMultiplier(
+                    .targetMultiplier !==
+                null
+                    ? roundTo(
                         state.autoCashout
-                            .targetMultiplier
+                            .targetMultiplier,
+                        2
                     )
+                    : null
         },
 
 
-        /* -------------------------------------------------
-           Cash Out
-        -------------------------------------------------- */
-
         cashout: {
+
             completed:
                 Boolean(
                     state.cashout
@@ -460,15 +589,19 @@ function buildSettlementRecord(
                         .automatic
                 ),
 
+            type:
+                state.cashout.type,
+
             multiplier:
                 state.cashout
-                    .multiplier ===
-                    null
-                    ? null
-                    : normalizeMultiplier(
+                    .multiplier !==
+                null
+                    ? roundTo(
                         state.cashout
-                            .multiplier
-                    ),
+                            .multiplier,
+                        2
+                    )
+                    : null,
 
             amount:
                 normalizeMoney(
@@ -492,38 +625,23 @@ function buildSettlementRecord(
         },
 
 
-        /* -------------------------------------------------
-           Financial result
-        -------------------------------------------------- */
-
         financial: {
-            wagered,
-            returned,
-            profit,
 
-            won:
-                profit > 0,
+            wagered:
+                financial.wagered,
 
-            lost:
-                profit < 0,
+            returned:
+                financial.returned,
 
-            neutral:
-                profit === 0
+            profit:
+                financial.profit
         },
 
 
-        /* -------------------------------------------------
-           Timing
-        -------------------------------------------------- */
-
         timing: {
-            countdownStartedAt:
-                state.countdown
-                    .startedAt,
 
-            countdownEndsAt:
-                state.countdown
-                    .endsAt,
+            roundCreatedAt:
+                state.createdAt,
 
             flightStartedAt:
                 state.flight
@@ -540,52 +658,49 @@ function buildSettlementRecord(
                         state.flight
                             .elapsedMs
                     ) || 0
-                )
-        },
-
-
-        /* -------------------------------------------------
-           Settlement
-        -------------------------------------------------- */
-
-        settlement: {
-            completed:
-                Boolean(
-                    state.settlement
-                        .completed
                 ),
 
-            completedAt:
-                state.settlement
-                    .completedAt
+            settledAt:
+                finalRecordedAt
         },
 
 
-        metadata:
-            clone(
-                state.metadata
-            )
+        /*
+         statistics.js may add:
+
+             statisticsRecorded
+             statisticsRecordedAt
+
+         storage.js intentionally preserves unknown History
+         fields.
+        */
+        statisticsRecorded:
+            false,
+
+        statisticsRecordedAt:
+            null
     };
 }
 
 
 /* =========================================================
-   VALIDATE SETTLEMENT PHASE
+   CAN NORMAL SETTLE
 ========================================================= */
 
-function canSettleRound() {
-    const state =
-        getState();
-
+function canSettleRound(
+    state =
+        getState()
+) {
 
     if (
-        runtime.settling
+        !state.roundId
     ) {
+
         return {
-            allowed: false,
+            valid: false,
 
             reason:
-                "SETTLEMENT_IN_PROGRESS"
+                "NO_ACTIVE_ROUND"
         };
     }
 
@@ -593,21 +708,86 @@ function canSettleRound() {
     if (
         state.settlement.completed
     ) {
+
         return {
-            allowed: false,
+            valid: false,
 
             reason:
-                "SETTLEMENT_ALREADY_COMPLETED"
+                "ALREADY_SETTLED"
         };
     }
 
 
     if (
-        state.phase !==
-        GAME_PHASES.CRASHED
+        runtime.processing
     ) {
+
         return {
-            allowed: false,
+            valid: false,
+
+            reason:
+                "SETTLEMENT_PROCESSING"
+        };
+    }
+
+
+    if (
+        runtime.settledRoundIds.has(
+            state.roundId
+        )
+    ) {
+
+        return {
+            valid: false,
+
+            reason:
+                "ROUND_ALREADY_RECORDED"
+        };
+    }
+
+
+    const result =
+        determineRoundResult(
+            state
+        );
+
+
+    if (!result) {
+
+        return {
+            valid: false,
+
+            reason:
+                "ROUND_NOT_SETTLEABLE",
+
+            betStatus:
+                state.bet.status
+        };
+    }
+
+
+    /*
+     A normal WIN or LOSS should occur only after Crash.
+
+     NO_BET can also settle after Crash.
+
+     REFUND may be finalized through the refund path.
+    */
+
+    if (
+        [
+            ROUND_RESULT.WIN,
+            ROUND_RESULT.LOSS,
+            ROUND_RESULT.NO_BET
+        ].includes(
+            result
+        ) &&
+        state.phase !==
+            GAME_PHASES.CRASHED
+    ) {
+
+        return {
+            valid: false,
 
             reason:
                 "ROUND_NOT_CRASHED",
@@ -619,7 +799,168 @@ function canSettleRound() {
 
 
     return {
-        allowed: true
+        valid: true,
+
+        result
+    };
+}
+
+
+/* =========================================================
+   PERSIST FINAL RECORD
+
+   Common finalization path used by normal settlement and
+   refund settlement.
+========================================================= */
+
+function persistFinalRecord({
+    state,
+    result,
+    financial
+}) {
+
+    const record =
+        buildRoundRecord(
+            state,
+            {
+                result,
+                financial
+            }
+        );
+
+
+    /* -----------------------------------------------------
+       History first.
+
+       If History cannot persist, do not mark State ENDED.
+    ----------------------------------------------------- */
+
+    const historyResult =
+        addHistoryEntry(
+            record
+        );
+
+
+    if (
+        !historyResult ||
+        historyResult.success ===
+            false
+    ) {
+
+        return {
+            success: false,
+
+            reason:
+                "HISTORY_WRITE_FAILED",
+
+            historyReason:
+                historyResult
+                    ?.reason ??
+                null
+        };
+    }
+
+
+    /* -----------------------------------------------------
+       Statistics
+
+       statistics.js should mark this History entry as
+       statisticsRecorded to prevent double counting.
+    ----------------------------------------------------- */
+
+    const statisticsResult =
+        recordRoundStatistics(
+            record.roundId
+        );
+
+
+    if (
+        !statisticsResult ||
+        statisticsResult.success ===
+            false
+    ) {
+
+        /*
+         History already exists.
+
+         Do not insert it again on retry.
+
+         statistics.js should be idempotent by roundId and
+         statisticsRecorded marker.
+        */
+
+        return {
+            success: false,
+
+            reason:
+                "STATISTICS_RECORD_FAILED",
+
+            statisticsReason:
+                statisticsResult
+                    ?.reason ??
+                null,
+
+            record
+        };
+    }
+
+
+    /* -----------------------------------------------------
+       Complete in-memory State last.
+    ----------------------------------------------------- */
+
+    const settlementResult =
+        completeSettlement({
+
+            result,
+
+            wagered:
+                financial.wagered,
+
+            returned:
+                financial.returned,
+
+            profit:
+                financial.profit,
+
+            recordId:
+                record.recordId,
+
+            completedAt:
+                record.recordedAt
+        });
+
+
+    if (
+        !settlementResult.success
+    ) {
+
+        return {
+            success: false,
+
+            reason:
+                "STATE_SETTLEMENT_FAILED",
+
+            record
+        };
+    }
+
+
+    runtime.settledRoundIds.add(
+        record.roundId
+    );
+
+
+    return {
+        success: true,
+
+        record,
+
+        statistics:
+            statisticsResult,
+
+        state:
+            settlementResult.state
     };
 }
 
@@ -627,252 +968,703 @@ function canSettleRound() {
 /* =========================================================
    SETTLE ROUND
 
-   Main settlement entry point.
+   Normal Crash-completed settlement.
 ========================================================= */
 
 function settleRound() {
+
+    const initialState =
+        getState();
+
+
     const validation =
-        canSettleRound();
+        canSettleRound(
+            initialState
+        );
 
 
-    if (!validation.allowed) {
+    if (
+        !validation.valid
+    ) {
 
-        /*
-         If already settled, return the cached settlement
-         when available instead of creating another one.
-        */
+        notifySettlementListeners({
 
-        if (
-            validation.reason ===
-                "SETTLEMENT_ALREADY_COMPLETED" &&
-            runtime.lastSettlement
-        ) {
-            return {
-                success: true,
+            type:
+                SETTLEMENT_EVENT_TYPES
+                    .SETTLEMENT_REJECTED,
 
-                alreadySettled: true,
-
-                settlement:
-                    clone(
-                        runtime.lastSettlement
-                    )
-            };
-        }
-
-
-        return {
-            success: false,
-
-            ...validation
-        };
-    }
-
-
-    runtime.settling =
-        true;
-
-
-    emitSettlementEvent(
-        "SETTLEMENT_START",
-        {
             roundId:
-                getState()
-                    .roundId
-        }
-    );
+                initialState.roundId,
 
-
-    try {
-
-        /* -------------------------------------------------
-           CRASHED -> SETTLING
-        -------------------------------------------------- */
-
-        const phaseResult =
-            setPhase(
-                GAME_PHASES.SETTLING
-            );
-
-
-        if (!phaseResult.success) {
-            return {
-                success: false,
-
-                reason:
-                    phaseResult.reason
-            };
-        }
-
-
-        /* -------------------------------------------------
-           Determine final bet outcome.
-        -------------------------------------------------- */
-
-        const outcome =
-            determineRoundOutcome();
-
-
-        if (!outcome.success) {
-            return {
-                success: false,
-
-                reason:
-                    outcome.reason,
-
-                betStatus:
-                    outcome.betStatus
-            };
-        }
-
-
-        /* -------------------------------------------------
-           Mark settlement completed.
-        -------------------------------------------------- */
-
-        const completionResult =
-            markSettlementCompleted();
-
-
-        if (!completionResult.success) {
-            return {
-                success: false,
-
-                reason:
-                    completionResult.reason
-            };
-        }
-
-
-        /* -------------------------------------------------
-           SETTLING -> ENDED
-        -------------------------------------------------- */
-
-        const endPhaseResult =
-            setPhase(
-                GAME_PHASES.ENDED
-            );
-
-
-        if (!endPhaseResult.success) {
-            return {
-                success: false,
-
-                reason:
-                    endPhaseResult.reason
-            };
-        }
-
-
-        /* -------------------------------------------------
-           Build final normalized record.
-        -------------------------------------------------- */
-
-        const settlement =
-            buildSettlementRecord(
-                getState()
-            );
-
-
-        runtime.lastSettlement =
-            clone(
-                settlement
-            );
-
-
-        /* -------------------------------------------------
-           Win sound.
-
-           Cashout sound already played at the moment of
-           cashout. This is the final success confirmation.
-        -------------------------------------------------- */
-
-        if (
-            settlement.result ===
-            ROUND_RESULT.WIN
-        ) {
-            playWin();
-        }
-
-
-        emitSettlementEvent(
-            "SETTLEMENT_COMPLETE",
-            {
-                settlement:
-                    clone(
-                        settlement
-                    )
-            }
-        );
-
-
-        return {
-            success: true,
-
-            alreadySettled:
-                false,
-
-            settlement
-        };
-
-    } catch (error) {
-
-        console.error(
-            "[CG Flight] Settlement failed:",
-            error
-        );
-
-
-        emitSettlementEvent(
-            "SETTLEMENT_ERROR",
-            {
-                error,
-
-                roundId:
-                    getState()
-                        .roundId
-            }
-        );
+            reason:
+                validation.reason
+        });
 
 
         return {
             success: false,
 
             reason:
-                "SETTLEMENT_EXCEPTION",
+                validation.reason
+        };
+    }
 
-            error
+
+    runtime.processing =
+        true;
+
+
+    try {
+
+        notifySettlementListeners({
+
+            type:
+                SETTLEMENT_EVENT_TYPES
+                    .SETTLEMENT_STARTED,
+
+            roundId:
+                initialState.roundId,
+
+            result:
+                validation.result
+        });
+
+
+        beginSettlement();
+
+
+        /*
+         beginSettlement() changes phase to SETTLING, so read
+         the latest State again for the canonical snapshot.
+        */
+
+        const state =
+            getState();
+
+
+        const result =
+            validation.result;
+
+
+        const financial =
+            calculateFinancialResult(
+                state,
+                result
+            );
+
+
+        const persisted =
+            persistFinalRecord({
+
+                state,
+                result,
+                financial
+            });
+
+
+        if (
+            !persisted.success
+        ) {
+
+            notifySettlementListeners({
+
+                type:
+                    SETTLEMENT_EVENT_TYPES
+                        .SETTLEMENT_REJECTED,
+
+                roundId:
+                    state.roundId,
+
+                reason:
+                    persisted.reason
+            });
+
+
+            return persisted;
+        }
+
+
+        notifySettlementListeners({
+
+            type:
+                SETTLEMENT_EVENT_TYPES
+                    .SETTLEMENT_COMPLETED,
+
+            roundId:
+                state.roundId,
+
+            result,
+
+            financial:
+                clone(
+                    financial
+                ),
+
+            record:
+                clone(
+                    persisted.record
+                )
+        });
+
+
+        return {
+
+            success: true,
+
+            result,
+
+            financial:
+                clone(
+                    financial
+                ),
+
+            record:
+                clone(
+                    persisted.record
+                )
         };
 
     } finally {
 
-        runtime.settling =
+        runtime.processing =
             false;
     }
 }
 
 
 /* =========================================================
-   GET LAST SETTLEMENT
+   CAN REFUND CURRENT BET
+
+   Refund is for abnormal round termination, not normal
+   player cancellation.
+
+   Eligible states:
+   - PLACED
+   - ACTIVE
+
+   CASHED_OUT must never be refunded.
+   LOST must never be refunded after legitimate Crash.
 ========================================================= */
 
-function getLastSettlement() {
-    return runtime.lastSettlement
-        ? clone(
-            runtime.lastSettlement
+function canRefundRound(
+    state =
+        getState()
+) {
+
+    if (
+        !state.roundId
+    ) {
+
+        return {
+            valid: false,
+
+            reason:
+                "NO_ACTIVE_ROUND"
+        };
+    }
+
+
+    if (
+        state.settlement.completed
+    ) {
+
+        return {
+            valid: false,
+
+            reason:
+                "ALREADY_SETTLED"
+        };
+    }
+
+
+    if (
+        runtime.processing
+    ) {
+
+        return {
+            valid: false,
+
+            reason:
+                "SETTLEMENT_PROCESSING"
+        };
+    }
+
+
+    if (
+        ![
+            BET_STATUS.PLACED,
+            BET_STATUS.ACTIVE
+        ].includes(
+            state.bet.status
         )
-        : null;
+    ) {
+
+        return {
+            valid: false,
+
+            reason:
+                "NO_REFUNDABLE_BET",
+
+            betStatus:
+                state.bet.status
+        };
+    }
+
+
+    const amount =
+        normalizeMoney(
+            state.bet.amount
+        );
+
+
+    if (
+        amount <= 0
+    ) {
+
+        return {
+            valid: false,
+
+            reason:
+                "INVALID_BET_AMOUNT"
+        };
+    }
+
+
+    return {
+        valid: true,
+        amount
+    };
 }
 
 
 /* =========================================================
-   GET CURRENT SETTLEMENT PREVIEW
+   REFUND ROUND
 
-   Does not change state.
+   Used when runtime must terminate a round without a valid
+   Crash result.
 
-   Useful before the final settlement call.
+   Example:
+       flight.js emits FLIGHT_ABORTED
+       ↓
+       page/game coordinator calls refundRound()
+========================================================= */
+
+function refundRound(
+    reason =
+        "ROUND_ABORTED"
+) {
+
+    const initialState =
+        getState();
+
+
+    const validation =
+        canRefundRound(
+            initialState
+        );
+
+
+    if (
+        !validation.valid
+    ) {
+
+        return {
+            success: false,
+
+            reason:
+                validation.reason
+        };
+    }
+
+
+    runtime.processing =
+        true;
+
+
+    try {
+
+        const refundResult =
+            creditSettlementRefund(
+                validation.amount,
+                {
+                    roundId:
+                        initialState
+                            .roundId,
+
+                    reason
+                }
+            );
+
+
+        if (
+            !refundResult.success
+        ) {
+
+            return {
+                success: false,
+
+                reason:
+                    "REFUND_CREDIT_FAILED",
+
+                walletReason:
+                    refundResult.reason
+            };
+        }
+
+
+        const refundedState =
+            markBetRefunded({
+
+                refundTransactionId:
+                    refundResult
+                        .transactionId
+            });
+
+
+        if (!refundedState) {
+
+            return {
+                success: false,
+
+                reason:
+                    "REFUND_STATE_UPDATE_FAILED",
+
+                refunded:
+                    validation.amount,
+
+                transactionId:
+                    refundResult
+                        .transactionId
+            };
+        }
+
+
+        beginSettlement();
+
+
+        const state =
+            getState();
+
+
+        const result =
+            ROUND_RESULT.REFUND;
+
+
+        const financial =
+            calculateFinancialResult(
+                state,
+                result
+            );
+
+
+        const persisted =
+            persistFinalRecord({
+
+                state,
+                result,
+                financial
+            });
+
+
+        if (
+            !persisted.success
+        ) {
+
+            return persisted;
+        }
+
+
+        notifySettlementListeners({
+
+            type:
+                SETTLEMENT_EVENT_TYPES
+                    .ROUND_REFUNDED,
+
+            roundId:
+                state.roundId,
+
+            reason,
+
+            amount:
+                validation.amount,
+
+            transactionId:
+                refundResult
+                    .transactionId,
+
+            record:
+                clone(
+                    persisted.record
+                )
+        });
+
+
+        notifySettlementListeners({
+
+            type:
+                SETTLEMENT_EVENT_TYPES
+                    .SETTLEMENT_COMPLETED,
+
+            roundId:
+                state.roundId,
+
+            result,
+
+            financial:
+                clone(
+                    financial
+                ),
+
+            record:
+                clone(
+                    persisted.record
+                )
+        });
+
+
+        return {
+
+            success: true,
+
+            result,
+
+            refunded:
+                validation.amount,
+
+            financial:
+                clone(
+                    financial
+                ),
+
+            record:
+                clone(
+                    persisted.record
+                )
+        };
+
+    } finally {
+
+        runtime.processing =
+            false;
+    }
+}
+
+
+/* =========================================================
+   SETTLE NO-BET ABORT
+
+   If a round aborts but there was never an active wager,
+   we can still save a NO_BET record if desired.
+
+   This is optional for the page coordinator.
+========================================================= */
+
+function settleNoBetRound(
+    reason =
+        "ROUND_ABORTED_NO_BET"
+) {
+
+    const state =
+        getState();
+
+
+    if (
+        !state.roundId
+    ) {
+
+        return {
+            success: false,
+
+            reason:
+                "NO_ACTIVE_ROUND"
+        };
+    }
+
+
+    if (
+        state.settlement.completed
+    ) {
+
+        return {
+            success: false,
+
+            reason:
+                "ALREADY_SETTLED"
+        };
+    }
+
+
+    if (
+        ![
+            BET_STATUS.NONE,
+            BET_STATUS.CANCELLED
+        ].includes(
+            state.bet.status
+        )
+    ) {
+
+        return {
+            success: false,
+
+            reason:
+                "ROUND_HAS_SETTLEABLE_BET"
+        };
+    }
+
+
+    runtime.processing =
+        true;
+
+
+    try {
+
+        beginSettlement();
+
+
+        const latest =
+            getState();
+
+
+        const result =
+            ROUND_RESULT.NO_BET;
+
+
+        const financial =
+            calculateFinancialResult(
+                latest,
+                result
+            );
+
+
+        const persisted =
+            persistFinalRecord({
+
+                state:
+                    latest,
+
+                result,
+
+                financial
+            });
+
+
+        if (
+            !persisted.success
+        ) {
+            return persisted;
+        }
+
+
+        notifySettlementListeners({
+
+            type:
+                SETTLEMENT_EVENT_TYPES
+                    .SETTLEMENT_COMPLETED,
+
+            roundId:
+                latest.roundId,
+
+            result,
+
+            reason,
+
+            financial:
+                clone(
+                    financial
+                ),
+
+            record:
+                clone(
+                    persisted.record
+                )
+        });
+
+
+        return {
+
+            success: true,
+
+            result,
+
+            financial:
+                clone(
+                    financial
+                ),
+
+            record:
+                clone(
+                    persisted.record
+                )
+        };
+
+    } finally {
+
+        runtime.processing =
+            false;
+    }
+}
+
+
+/* =========================================================
+   GET SETTLEMENT PREVIEW
 ========================================================= */
 
 function getSettlementPreview() {
+
+    const state =
+        getState();
+
+
+    const result =
+        determineRoundResult(
+            state
+        );
+
+
+    if (!result) {
+
+        return {
+
+            settleable:
+                false,
+
+            result:
+                null,
+
+            reason:
+                "ROUND_NOT_SETTLEABLE"
+        };
+    }
+
+
+    const financial =
+        calculateFinancialResult(
+            state,
+            result
+        );
+
+
+    return {
+
+        settleable:
+            true,
+
+        result,
+
+        financial:
+            clone(
+                financial
+            )
+    };
+}
+
+
+/* =========================================================
+   GET SETTLEMENT STATUS
+========================================================= */
+
+function getSettlementStatus() {
+
     const state =
         getState();
 
@@ -885,48 +1677,35 @@ function getSettlementPreview() {
         phase:
             state.phase,
 
-        settlementCompleted:
+        processing:
+            runtime.processing,
+
+        completed:
             state.settlement
                 .completed,
 
-        betStatus:
-            state.bet
-                .status,
-
-        resultStatus:
-            state.result
-                .status,
+        result:
+            state.settlement.result,
 
         wagered:
-            normalizeMoney(
-                state.result
-                    .wagered
-            ),
+            state.settlement
+                .wagered,
 
         returned:
-            normalizeMoney(
-                state.result
-                    .returned
-            ),
+            state.settlement
+                .returned,
 
         profit:
-            normalizeMoney(
-                state.result
-                    .profit
-            ),
+            state.settlement
+                .profit,
 
-        crashMultiplier:
-            normalizeMultiplier(
-                state.crashMultiplier
-            ),
+        recordId:
+            state.settlement
+                .recordId,
 
-        cashoutCompleted:
-            state.cashout
-                .completed,
-
-        cashoutMultiplier:
-            state.cashout
-                .multiplier
+        completedAt:
+            state.settlement
+                .completedAt
     };
 }
 
@@ -934,77 +1713,57 @@ function getSettlementPreview() {
 /* =========================================================
    RESET SETTLEMENT RUNTIME
 
-   Call when beginning a new round.
+   Called before a fresh round.
+
+   The Set is intentionally retained for the current page
+   lifetime to protect against duplicate persistence if stale
+   callbacks try to settle an old round again.
 ========================================================= */
 
 function resetSettlementRuntime() {
-    runtime.settling =
+
+    runtime.processing =
         false;
 
-    runtime.lastSettlement =
-        null;
 
     return true;
 }
 
 
 /* =========================================================
-   AUTO SETTLEMENT ON CRASH
-
-   flight.js emits CRASH after state has transitioned to
-   GAME_PHASES.CRASHED.
-
-   Therefore settlement can begin immediately afterward.
+   FULL DEVELOPMENT RESET
 ========================================================= */
 
-subscribeToFlight(
-    (event) => {
+function clearSettledRoundRuntimeCache() {
 
-        if (
-            event.type !==
-            "CRASH"
-        ) {
-            return;
-        }
+    runtime.processing =
+        false;
 
 
-        const result =
-            settleRound();
+    runtime.settledRoundIds.clear();
 
 
-        if (!result.success) {
-            console.error(
-                "[CG Flight] Automatic settlement failed:",
-                result
-            );
-        }
-    }
-);
+    return true;
+}
 
 
 /* =========================================================
-   ROUND SUMMARY HELPER
-
-   Exposes state.js summary for debugging alongside settlement.
+   COMPATIBILITY ALIASES
 ========================================================= */
 
-function getSettlementDebugState() {
-    return {
-        runtime: {
-            settling:
-                runtime.settling,
+function settle() {
 
-            hasLastSettlement:
-                runtime.lastSettlement !==
-                null
-        },
+    return settleRound();
+}
 
-        round:
-            getRoundSummary(),
 
-        settlement:
-            getLastSettlement()
-    };
+function refundSettlement(
+    reason
+) {
+
+    return refundRound(
+        reason
+    );
 }
 
 
@@ -1014,18 +1773,29 @@ function getSettlementDebugState() {
 
 export {
     SETTLEMENT_CONFIG,
+    SETTLEMENT_EVENT_TYPES,
+
+    determineRoundResult,
+    calculateFinancialResult,
+    buildRoundRecord,
 
     canSettleRound,
     settleRound,
 
-    buildSettlementRecord,
+    canRefundRound,
+    refundRound,
+
+    settleNoBetRound,
 
     getSettlementPreview,
-    getLastSettlement,
+    getSettlementStatus,
 
     resetSettlementRuntime,
+    clearSettledRoundRuntimeCache,
 
     subscribeToSettlement,
 
-    getSettlementDebugState
+    /* Compatibility */
+    settle,
+    refundSettlement
 };
