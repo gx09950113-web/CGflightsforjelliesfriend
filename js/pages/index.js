@@ -6,17 +6,20 @@
 
    Responsibilities:
    - Process player login
-   - Display wallet balance
-   - Display daily login reward result
-   - Enforce README modal every page load
-   - Manage persistent sound/music settings
-   - Manage Lobby BGM / SFX
-   - Render player statistics
-   - Open / close page modals
+   - Render wallet
+   - Render login reward status
+   - Force README modal on every page load
+   - Manage Settings modal
+   - Manage Statistics modal
+   - Manage Lobby audio
+   - Bind Lobby navigation/UI controls
 
    IMPORTANT:
-   Game rules and persistence are handled by core/game
-   modules. This file only coordinates the Lobby UI.
+   README is shown on EVERY index.html load.
+
+   The modal itself blocks Lobby interaction.
+   We intentionally DO NOT apply additional pointer-events
+   or disabled locks to the entire page.
 ========================================================= */
 
 
@@ -26,13 +29,16 @@
 
 import {
     getBalance,
-    formatCoins
+    formatCoins,
+    subscribeToWallet
 } from "../core/wallet.js";
+
 
 import {
     processLogin,
     getLoginStatus
 } from "../core/login.js";
+
 
 import {
     getSettings,
@@ -40,6 +46,7 @@ import {
     toggleMusicEnabled,
     subscribeToSettings
 } from "../core/settings.js";
+
 
 import {
     preloadAudio,
@@ -50,10 +57,12 @@ import {
     playLoginReward
 } from "../core/audio.js";
 
+
 import {
     showElement,
     hideElement,
-    setText
+    setText,
+    setAriaPressed
 } from "../core/utils.js";
 
 
@@ -62,7 +71,8 @@ import {
 ========================================================= */
 
 import {
-    getStatisticsSummary
+    getStatisticsSummary,
+    subscribeToStatistics
 } from "../game/statistics.js";
 
 
@@ -93,38 +103,13 @@ const ICONS = Object.freeze({
 const elements = {
 
     /* -----------------------------------------------------
-       Wallet
+       Header
     ----------------------------------------------------- */
 
     walletBalance:
         document.getElementById(
             "walletBalance"
         ),
-
-
-    /* -----------------------------------------------------
-       Login reward
-    ----------------------------------------------------- */
-
-    loginRewardPanel:
-        document.getElementById(
-            "loginRewardPanel"
-        ),
-
-    loginStreak:
-        document.getElementById(
-            "loginStreak"
-        ),
-
-    todayLoginReward:
-        document.getElementById(
-            "todayLoginReward"
-        ),
-
-
-    /* -----------------------------------------------------
-       Header controls
-    ----------------------------------------------------- */
 
     soundToggleButton:
         document.getElementById(
@@ -153,7 +138,7 @@ const elements = {
 
 
     /* -----------------------------------------------------
-       Lobby actions
+       Play
     ----------------------------------------------------- */
 
     playButton:
@@ -161,14 +146,34 @@ const elements = {
             "playButton"
         ),
 
-    statisticsButton:
+
+    /* -----------------------------------------------------
+       Login Reward
+    ----------------------------------------------------- */
+
+    loginRewardPanel:
         document.getElementById(
-            "statisticsButton"
+            "loginRewardPanel"
+        ),
+
+    loginStreak:
+        document.getElementById(
+            "loginStreak"
+        ),
+
+    todayLoginReward:
+        document.getElementById(
+            "todayLoginReward"
+        ),
+
+    loginCycleDays:
+        document.querySelectorAll(
+            ".login-cycle-day"
         ),
 
 
     /* -----------------------------------------------------
-       README modal
+       README
     ----------------------------------------------------- */
 
     readmeModal:
@@ -183,7 +188,7 @@ const elements = {
 
 
     /* -----------------------------------------------------
-       Settings modal
+       Settings
     ----------------------------------------------------- */
 
     settingsModal:
@@ -208,8 +213,13 @@ const elements = {
 
 
     /* -----------------------------------------------------
-       Statistics modal
+       Statistics
     ----------------------------------------------------- */
+
+    statisticsButton:
+        document.getElementById(
+            "statisticsButton"
+        ),
 
     statisticsModal:
         document.getElementById(
@@ -229,14 +239,16 @@ const elements = {
 
 
 /* =========================================================
-   PAGE RUNTIME
+   RUNTIME
 ========================================================= */
 
 const runtime = {
 
-    readmeAccepted: false,
+    readmeAccepted:
+        false,
 
-    loginResult: null
+    loginResult:
+        null
 };
 
 
@@ -246,28 +258,29 @@ const runtime = {
 
 function init() {
 
+    /* -----------------------------------------------------
+       Audio
+    ----------------------------------------------------- */
+
     preloadAudio();
 
 
-    /*
-     IMPORTANT:
-     README is shown BEFORE normal Lobby interaction is
-     unlocked.
-    */
+    /* -----------------------------------------------------
+       Login
 
-    lockPageForReadme();
-
-
-    /*
-     Process login once for this page load.
-
-     login.js prevents duplicate same-day rewards, so coming
-     back from game.html will not issue another daily bonus.
-    */
+       First local login:
+           +10,000 initial
+           +1,000 Day 1
+           = +11,000
+    ----------------------------------------------------- */
 
     runtime.loginResult =
         processLogin();
 
+
+    /* -----------------------------------------------------
+       Render initial UI
+    ----------------------------------------------------- */
 
     renderWallet();
 
@@ -275,35 +288,279 @@ function init() {
 
     updateSettingsUI();
 
-    renderStatistics();
+
+    /* -----------------------------------------------------
+       Bind controls BEFORE showing README.
+
+       This guarantees the Accept button has its listener
+       before the player can interact with it.
+    ----------------------------------------------------- */
+
+    bindControls();
+
+    bindModuleEvents();
 
 
-    bindReadmeEvents();
+    /* -----------------------------------------------------
+       README
 
-    bindSettingsEvents();
+       Always force it open on every Lobby load.
+    ----------------------------------------------------- */
 
-    bindStatisticsEvents();
+    openReadme();
 
-    bindAudioEvents();
 
-    bindLobbyEvents();
+    /*
+     Do NOT start Lobby BGM here.
 
-    bindGlobalEvents();
+     Starting it after Accept both satisfies browser autoplay
+     restrictions and matches the intended README flow.
+    */
 }
 
 
 /* =========================================================
-   README MODAL
-
-   Rules:
-   - Always appears whenever index.html loads
-   - Never stored as "already read"
-   - Cannot close by backdrop
-   - Cannot close with Escape
-   - Lobby remains locked until accepted
+   BIND CONTROLS
 ========================================================= */
 
-function lockPageForReadme() {
+function bindControls() {
+
+    /* -----------------------------------------------------
+       README Accept
+    ----------------------------------------------------- */
+
+    elements.acceptReadmeButton
+        ?.addEventListener(
+            "click",
+            handleAcceptReadme
+        );
+
+
+    /* -----------------------------------------------------
+       Play
+    ----------------------------------------------------- */
+
+    elements.playButton
+        ?.addEventListener(
+            "click",
+            handlePlayClick
+        );
+
+
+    /* -----------------------------------------------------
+       Header Sound
+    ----------------------------------------------------- */
+
+    elements.soundToggleButton
+        ?.addEventListener(
+            "click",
+            () => {
+
+                playClick();
+
+                toggleSoundEnabled();
+            }
+        );
+
+
+    /* -----------------------------------------------------
+       Header Music
+    ----------------------------------------------------- */
+
+    elements.musicToggleButton
+        ?.addEventListener(
+            "click",
+            () => {
+
+                playClick();
+
+                toggleMusicEnabled();
+            }
+        );
+
+
+    /* -----------------------------------------------------
+       Settings
+    ----------------------------------------------------- */
+
+    elements.settingsButton
+        ?.addEventListener(
+            "click",
+            openSettings
+        );
+
+
+    elements.closeSettingsButton
+        ?.addEventListener(
+            "click",
+            closeSettings
+        );
+
+
+    elements.settingsSoundToggle
+        ?.addEventListener(
+            "click",
+            () => {
+
+                playClick();
+
+                toggleSoundEnabled();
+            }
+        );
+
+
+    elements.settingsMusicToggle
+        ?.addEventListener(
+            "click",
+            () => {
+
+                playClick();
+
+                toggleMusicEnabled();
+            }
+        );
+
+
+    elements.settingsModal
+        ?.addEventListener(
+            "click",
+            (event) => {
+
+                if (
+                    event.target ===
+                    elements.settingsModal
+                ) {
+
+                    closeSettings();
+                }
+            }
+        );
+
+
+    /* -----------------------------------------------------
+       Statistics
+    ----------------------------------------------------- */
+
+    elements.statisticsButton
+        ?.addEventListener(
+            "click",
+            openStatistics
+        );
+
+
+    elements.closeStatisticsButton
+        ?.addEventListener(
+            "click",
+            closeStatistics
+        );
+
+
+    elements.statisticsModal
+        ?.addEventListener(
+            "click",
+            (event) => {
+
+                if (
+                    event.target ===
+                    elements.statisticsModal
+                ) {
+
+                    closeStatistics();
+                }
+            }
+        );
+
+
+    /* -----------------------------------------------------
+       Keyboard
+    ----------------------------------------------------- */
+
+    document.addEventListener(
+        "keydown",
+        handleKeydown
+    );
+}
+
+
+/* =========================================================
+   MODULE EVENTS
+========================================================= */
+
+function bindModuleEvents() {
+
+    subscribeToWallet(
+        () => {
+
+            renderWallet();
+        }
+    );
+
+
+    subscribeToSettings(
+        ({
+            settings,
+            changedKeys
+        }) => {
+
+            updateSettingsUI();
+
+
+            /*
+             audio.js already pauses BGM automatically when
+             musicEnabled becomes false.
+
+             If music is enabled again while the README has
+             already been accepted, request Lobby BGM.
+            */
+
+            if (
+                changedKeys.includes(
+                    "musicEnabled"
+                ) &&
+                settings.musicEnabled &&
+                runtime.readmeAccepted
+            ) {
+
+                playBgm(
+                    "lobby"
+                );
+            }
+        }
+    );
+
+
+    subscribeToStatistics(
+        () => {
+
+            /*
+             If Statistics Modal is currently open, refresh
+             its content immediately.
+            */
+
+            if (
+                isElementOpen(
+                    elements.statisticsModal
+                )
+            ) {
+
+                renderStatistics();
+            }
+        }
+    );
+}
+
+
+/* =========================================================
+   README OPEN
+
+   IMPORTANT:
+   No page-wide pointer-events lock.
+
+   .modal-overlay already covers the viewport and intercepts
+   all pointer interaction.
+========================================================= */
+
+function openReadme() {
 
     runtime.readmeAccepted =
         false;
@@ -318,32 +575,20 @@ function lockPageForReadme() {
         "hidden";
 
 
-    if (
-        elements.acceptReadmeButton
-    ) {
-        requestAnimationFrame(
-            () => {
+    /*
+     Focus after current call stack so the modal is already
+     visible.
+    */
 
-                elements
-                    .acceptReadmeButton
-                    .focus();
-            }
-        );
-    }
-}
+    window.setTimeout(
+        () => {
 
+            elements.acceptReadmeButton
+                ?.focus();
 
-/* =========================================================
-   README EVENTS
-========================================================= */
-
-function bindReadmeEvents() {
-
-    elements.acceptReadmeButton
-        ?.addEventListener(
-            "click",
-            handleReadmeAccepted
-        );
+        },
+        0
+    );
 }
 
 
@@ -351,20 +596,10 @@ function bindReadmeEvents() {
    ACCEPT README
 ========================================================= */
 
-function handleReadmeAccepted() {
-
-    if (
-        runtime.readmeAccepted
-    ) {
-        return;
-    }
-
+function handleAcceptReadme() {
 
     runtime.readmeAccepted =
         true;
-
-
-    playClick();
 
 
     hideElement(
@@ -377,27 +612,74 @@ function handleReadmeAccepted() {
 
 
     /*
-     First meaningful user interaction has occurred,
-     therefore Lobby BGM has a much better chance of passing
-     browser autoplay restrictions.
-    */
-
-    playBgm(
-        "lobby"
-    );
-
-
-    /*
-     Reward sound only plays when this page load actually
-     granted something.
+     Play Login Reward only after a real user gesture.
+     This avoids browser autoplay restrictions.
     */
 
     if (
-        runtime.loginResult?.success &&
-        runtime.loginResult.totalReward > 0
+        runtime.loginResult
+            ?.success &&
+        runtime.loginResult
+            .totalReward > 0
     ) {
+
         playLoginReward();
     }
+
+
+    /*
+     Same user gesture also unlocks BGM playback.
+    */
+
+    const settings =
+        getSettings();
+
+
+    if (
+        settings.musicEnabled
+    ) {
+
+        playBgm(
+            "lobby"
+        );
+    }
+}
+
+
+/* =========================================================
+   PLAY GAME
+========================================================= */
+
+function handlePlayClick(
+    event
+) {
+
+    /*
+     README should normally make this impossible because its
+     overlay covers the Lobby.
+
+     Keep this guard as a secondary safety layer.
+    */
+
+    if (
+        !runtime.readmeAccepted
+    ) {
+
+        event.preventDefault();
+
+        return;
+    }
+
+
+    playEnterRoom();
+
+
+    /*
+     Do not prevent navigation.
+
+     playEnterRoom() uses an Audio clone, so the browser may
+     navigate normally to game.html.
+    */
 }
 
 
@@ -417,7 +699,7 @@ function renderWallet() {
 
 
 /* =========================================================
-   LOGIN REWARD UI
+   LOGIN REWARD
 ========================================================= */
 
 function renderLoginReward() {
@@ -430,200 +712,101 @@ function renderLoginReward() {
         getLoginStatus();
 
 
-    /*
-     Display current cycle day rather than unbounded streak.
+    /* -----------------------------------------------------
+       Cycle Day
+    ----------------------------------------------------- */
 
-     login.js currently keeps:
-       streak   = real consecutive days
-       cycleDay = 1–7 reward cycle
-    */
+    const cycleDay =
+        Number(
+            status.cycleDay
+        ) || 1;
+
 
     setText(
         elements.loginStreak,
-        status.cycleDay || 0
+        cycleDay
     );
 
 
-    if (
-        !result ||
-        !result.success
-    ) {
+    /* -----------------------------------------------------
+       Today's actually granted reward
 
-        setText(
-            elements.todayLoginReward,
-            "+0"
-        );
+       First login:
+           +11,000
 
+       Normal login:
+           +1,000
 
-        return;
-    }
+       Day 7:
+           +8,777
 
+       Already claimed:
+           +0
+    ----------------------------------------------------- */
 
-    /*
-     Newly granted reward on THIS page load.
-    */
-
-    if (
-        result.totalReward > 0
-    ) {
-
-        setText(
-            elements.todayLoginReward,
-            `+${formatCoins(result.totalReward)}`
-        );
-
-
-        elements.loginRewardPanel
-            ?.classList
-            .add(
-                "is-rewarded"
-            );
-
-
-        return;
-    }
-
-
-    /*
-     Same day reopened:
-     reward has already been claimed.
-
-     Show today's normal reward value rather than pretending
-     another reward was just granted.
-    */
-
-    const dailyAmount =
-        status.cycleDay === 7
-            ? 8777
-            : 1000;
+    const reward =
+        (
+            result?.success &&
+            result?.claimed
+        )
+            ? Number(
+                result.totalReward
+            ) || 0
+            : 0;
 
 
     setText(
         elements.todayLoginReward,
-        `+${formatCoins(dailyAmount)}`
+        `+${formatCoins(
+            reward
+        )}`
     );
 
 
-    elements.loginRewardPanel
-        ?.classList
-        .remove(
-            "is-rewarded"
-        );
-}
+    /* -----------------------------------------------------
+       Highlight cycle
+    ----------------------------------------------------- */
+
+    elements.loginCycleDays
+        .forEach(
+            (element) => {
+
+                const day =
+                    Number(
+                        element.dataset.day
+                    );
 
 
-/* =========================================================
-   SETTINGS EVENTS
-========================================================= */
-
-function bindSettingsEvents() {
-
-    elements.settingsButton
-        ?.addEventListener(
-            "click",
-            openSettingsModal
-        );
+                element.classList.toggle(
+                    "is-current",
+                    day === cycleDay
+                );
 
 
-    elements.closeSettingsButton
-        ?.addEventListener(
-            "click",
-            closeSettingsModal
-        );
+                /*
+                 is-claimed means already passed in the
+                 CURRENT seven-day cycle.
 
+                 On Day 1 only Day 1 is current.
+                */
 
-    elements.settingsModal
-        ?.addEventListener(
-            "click",
-            (event) => {
-
-                if (
-                    event.target ===
-                    elements.settingsModal
-                ) {
-                    closeSettingsModal();
-                }
-            }
-        );
-
-
-    elements.settingsSoundToggle
-        ?.addEventListener(
-            "click",
-            () => {
-
-                toggleSoundEnabled();
-            }
-        );
-
-
-    elements.settingsMusicToggle
-        ?.addEventListener(
-            "click",
-            () => {
-
-                toggleMusicEnabled();
-            }
-        );
-}
-
-
-/* =========================================================
-   HEADER AUDIO EVENTS
-========================================================= */
-
-function bindAudioEvents() {
-
-    elements.soundToggleButton
-        ?.addEventListener(
-            "click",
-            () => {
-
-                toggleSoundEnabled();
-            }
-        );
-
-
-    elements.musicToggleButton
-        ?.addEventListener(
-            "click",
-            () => {
-
-                toggleMusicEnabled();
-            }
-        );
-
-
-    subscribeToSettings(
-        ({
-            settings,
-            changedKeys
-        }) => {
-
-            updateSettingsUI();
-
-
-            /*
-             settings.js / audio.js already handle pausing
-             current BGM when music becomes false.
-
-             When music becomes true, explicitly request the
-             Lobby track.
-            */
-
-            if (
-                changedKeys.includes(
-                    "musicEnabled"
-                ) &&
-                settings.musicEnabled &&
-                runtime.readmeAccepted
-            ) {
-                playBgm(
-                    "lobby"
+                element.classList.toggle(
+                    "is-claimed",
+                    day < cycleDay
                 );
             }
-        }
-    );
+        );
+
+
+    /* -----------------------------------------------------
+       Rewarded panel
+    ----------------------------------------------------- */
+
+    elements.loginRewardPanel
+        ?.classList.toggle(
+            "is-rewarded",
+            reward > 0
+        );
 }
 
 
@@ -638,7 +821,7 @@ function updateSettingsUI() {
 
 
     /* -----------------------------------------------------
-       Header sound
+       Sound icon
     ----------------------------------------------------- */
 
     if (
@@ -652,29 +835,18 @@ function updateSettingsUI() {
     }
 
 
-    if (
-        elements.soundToggleButton
-    ) {
+    elements.soundToggleButton
+        ?.setAttribute(
+            "aria-label",
 
-        elements.soundToggleButton
-            .setAttribute(
-                "aria-label",
-
-                settings.soundEnabled
-                    ? "關閉音效"
-                    : "開啟音效"
-            );
-
-
-        elements.soundToggleButton.title =
             settings.soundEnabled
                 ? "關閉音效"
-                : "開啟音效";
-    }
+                : "開啟音效"
+        );
 
 
     /* -----------------------------------------------------
-       Header music
+       Music icon
     ----------------------------------------------------- */
 
     if (
@@ -688,29 +860,18 @@ function updateSettingsUI() {
     }
 
 
-    if (
-        elements.musicToggleButton
-    ) {
+    elements.musicToggleButton
+        ?.setAttribute(
+            "aria-label",
 
-        elements.musicToggleButton
-            .setAttribute(
-                "aria-label",
-
-                settings.musicEnabled
-                    ? "關閉背景音樂"
-                    : "開啟背景音樂"
-            );
-
-
-        elements.musicToggleButton.title =
             settings.musicEnabled
                 ? "關閉背景音樂"
-                : "開啟背景音樂";
-    }
+                : "開啟背景音樂"
+        );
 
 
     /* -----------------------------------------------------
-       Settings modal
+       Settings buttons
     ----------------------------------------------------- */
 
     setText(
@@ -731,22 +892,16 @@ function updateSettingsUI() {
     );
 
 
-    elements.settingsSoundToggle
-        ?.setAttribute(
-            "aria-pressed",
-            String(
-                settings.soundEnabled
-            )
-        );
+    setAriaPressed(
+        elements.settingsSoundToggle,
+        settings.soundEnabled
+    );
 
 
-    elements.settingsMusicToggle
-        ?.setAttribute(
-            "aria-pressed",
-            String(
-                settings.musicEnabled
-            )
-        );
+    setAriaPressed(
+        elements.settingsMusicToggle,
+        settings.musicEnabled
+    );
 }
 
 
@@ -754,14 +909,7 @@ function updateSettingsUI() {
    OPEN SETTINGS
 ========================================================= */
 
-function openSettingsModal() {
-
-    if (
-        !runtime.readmeAccepted
-    ) {
-        return;
-    }
-
+function openSettings() {
 
     playClick();
 
@@ -771,14 +919,8 @@ function openSettingsModal() {
     );
 
 
-    requestAnimationFrame(
-        () => {
-
-            elements
-                .closeSettingsButton
-                ?.focus();
-        }
-    );
+    document.body.style.overflow =
+        "hidden";
 }
 
 
@@ -786,7 +928,7 @@ function openSettingsModal() {
    CLOSE SETTINGS
 ========================================================= */
 
-function closeSettingsModal() {
+function closeSettings() {
 
     playClick();
 
@@ -796,68 +938,19 @@ function closeSettingsModal() {
     );
 
 
-    elements.settingsButton
-        ?.focus();
+    document.body.style.overflow =
+        "";
 }
 
 
 /* =========================================================
-   STATISTICS EVENTS
+   STATISTICS
 ========================================================= */
 
-function bindStatisticsEvents() {
-
-    elements.statisticsButton
-        ?.addEventListener(
-            "click",
-            openStatisticsModal
-        );
-
-
-    elements.closeStatisticsButton
-        ?.addEventListener(
-            "click",
-            closeStatisticsModal
-        );
-
-
-    elements.statisticsModal
-        ?.addEventListener(
-            "click",
-            (event) => {
-
-                if (
-                    event.target ===
-                    elements.statisticsModal
-                ) {
-                    closeStatisticsModal();
-                }
-            }
-        );
-}
-
-
-/* =========================================================
-   OPEN STATISTICS
-========================================================= */
-
-function openStatisticsModal() {
-
-    if (
-        !runtime.readmeAccepted
-    ) {
-        return;
-    }
-
+function openStatistics() {
 
     playClick();
 
-
-    /*
-     Refresh data every time the modal opens because Game
-     rounds may have changed the statistics since the Lobby
-     was first loaded.
-    */
 
     renderStatistics();
 
@@ -867,14 +960,8 @@ function openStatisticsModal() {
     );
 
 
-    requestAnimationFrame(
-        () => {
-
-            elements
-                .closeStatisticsButton
-                ?.focus();
-        }
-    );
+    document.body.style.overflow =
+        "hidden";
 }
 
 
@@ -882,7 +969,7 @@ function openStatisticsModal() {
    CLOSE STATISTICS
 ========================================================= */
 
-function closeStatisticsModal() {
+function closeStatistics() {
 
     playClick();
 
@@ -892,16 +979,13 @@ function closeStatisticsModal() {
     );
 
 
-    elements.statisticsButton
-        ?.focus();
+    document.body.style.overflow =
+        "";
 }
 
 
 /* =========================================================
-   STATISTICS RENDER
-
-   This does not require fixed IDs inside the statistics
-   modal. It builds the content dynamically.
+   RENDER STATISTICS
 ========================================================= */
 
 function renderStatistics() {
@@ -913,170 +997,211 @@ function renderStatistics() {
     }
 
 
-    const stats =
+    const statistics =
         getStatisticsSummary();
 
 
-    const rows = [
+    const items = [
 
-        [
-            "Completed Rounds",
-            formatCoins(
-                stats.totalRounds
-            )
-        ],
+        {
+            label:
+                "TOTAL ROUNDS",
 
-        [
-            "Valid Bets",
-            formatCoins(
-                stats.totalBets
-            )
-        ],
+            value:
+                formatCoins(
+                    statistics.totalRounds
+                )
+        },
 
-        [
-            "Successful Cash Outs",
-            formatCoins(
-                stats.cashoutCount
-            )
-        ],
+        {
+            label:
+                "VALID BETS",
 
-        [
-            "Crash Losses",
-            formatCoins(
-                stats.crashLossCount
-            )
-        ],
+            value:
+                formatCoins(
+                    statistics.validBets
+                )
+        },
 
-        [
-            "Win Rate",
-            `${stats.winRate.toFixed(2)}%`
-        ],
+        {
+            label:
+                "CASH OUTS",
 
-        [
-            "Total Wagered",
-            formatCoins(
-                stats.totalWagered
-            )
-        ],
+            value:
+                formatCoins(
+                    statistics.wins
+                )
+        },
 
-        [
-            "Total Returned",
-            formatCoins(
-                stats.totalReturned
-            )
-        ],
+        {
+            label:
+                "CRASH LOSSES",
 
-        [
-            "Net Profit",
-            formatSignedCoins(
-                stats.netProfit
-            )
-        ],
+            value:
+                formatCoins(
+                    statistics.losses
+                )
+        },
 
-        [
-            "Experienced Return Rate",
-            `${stats.returnRate.toFixed(2)}%`
-        ],
+        {
+            label:
+                "WIN RATE",
 
-        [
-            "Highest Cash Out",
-            `${stats.highestCashoutMultiplier.toFixed(2)}×`
-        ],
+            value:
+                `${Number(
+                    statistics.winRate
+                ).toFixed(2)}%`
+        },
 
-        [
-            "Highest Crash",
-            `${stats.highestCrashMultiplier.toFixed(2)}×`
-        ],
+        {
+            label:
+                "TOTAL WAGERED",
 
-        [
-            "Highest Single Win",
-            formatCoins(
-                stats.highestSingleWin
-            )
-        ]
+            value:
+                formatCoins(
+                    statistics.totalWagered
+                )
+        },
+
+        {
+            label:
+                "TOTAL RETURNED",
+
+            value:
+                formatCoins(
+                    statistics.totalReturned
+                )
+        },
+
+        {
+            label:
+                "NET PROFIT",
+
+            value:
+                formatSignedCoins(
+                    statistics.netProfit
+                )
+        },
+
+        {
+            label:
+                "HIGHEST CASH OUT",
+
+            value:
+                statistics
+                    .highestCashoutMultiplier > 0
+                    ? `${Number(
+                        statistics
+                            .highestCashoutMultiplier
+                    ).toFixed(2)}×`
+                    : "—"
+        },
+
+        {
+            label:
+                "HIGHEST CRASH",
+
+            value:
+                statistics
+                    .highestCrashMultiplier > 0
+                    ? `${Number(
+                        statistics
+                            .highestCrashMultiplier
+                    ).toFixed(2)}×`
+                    : "—"
+        },
+
+        {
+            label:
+                "HIGHEST SINGLE WIN",
+
+            value:
+                formatCoins(
+                    statistics.highestSingleWin
+                )
+        },
+
+        {
+            label:
+                "REALIZED RETURN",
+
+            value:
+                `${Number(
+                    statistics
+                        .experiencedReturnRate
+                ).toFixed(2)}%`
+        }
     ];
 
 
-    const fragment =
-        document.createDocumentFragment();
-
-
-    const container =
+    const grid =
         document.createElement(
             "div"
         );
 
 
-    container.className =
+    grid.className =
         "statistics-grid";
 
 
     for (
-        const [
-            label,
-            value
-        ]
-        of rows
+        const item
+        of items
     ) {
 
-        const item =
+        const element =
             document.createElement(
                 "div"
             );
 
 
-        item.className =
+        element.className =
             "statistics-item";
 
 
-        const labelElement =
+        const label =
             document.createElement(
                 "span"
             );
 
 
-        labelElement.className =
+        label.className =
             "statistics-item-label";
 
 
-        labelElement.textContent =
-            label;
+        label.textContent =
+            item.label;
 
 
-        const valueElement =
+        const value =
             document.createElement(
                 "strong"
             );
 
 
-        valueElement.className =
+        value.className =
             "statistics-item-value";
 
 
-        valueElement.textContent =
-            value;
+        value.textContent =
+            item.value;
 
 
-        item.append(
-            labelElement,
-            valueElement
+        element.append(
+            label,
+            value
         );
 
 
-        container.appendChild(
-            item
+        grid.appendChild(
+            element
         );
     }
 
 
-    fragment.appendChild(
-        container
-    );
-
-
     elements.statisticsModalBody
         .replaceChildren(
-            fragment
+            grid
         );
 }
 
@@ -1090,37 +1215,28 @@ function formatSignedCoins(
 ) {
 
     const numeric =
-        Number(value);
-
-
-    if (
-        !Number.isFinite(
-            numeric
-        )
-    ) {
-        return "0";
-    }
+        Number(value) || 0;
 
 
     if (
         numeric > 0
     ) {
-        return (
-            `+${formatCoins(numeric)}`
-        );
+
+        return `+${formatCoins(
+            numeric
+        )}`;
     }
 
 
     if (
         numeric < 0
     ) {
-        return (
-            `-${formatCoins(
-                Math.abs(
-                    numeric
-                )
-            )}`
-        );
+
+        return `-${formatCoins(
+            Math.abs(
+                numeric
+            )
+        )}`;
     }
 
 
@@ -1129,148 +1245,23 @@ function formatSignedCoins(
 
 
 /* =========================================================
-   LOBBY EVENTS
-========================================================= */
-
-function bindLobbyEvents() {
-
-    /*
-     START FLIGHT is normally an <a href="./game.html">.
-
-     We only add audio here.
-    */
-
-    elements.playButton
-        ?.addEventListener(
-            "click",
-            (event) => {
-
-                if (
-                    !runtime.readmeAccepted
-                ) {
-                    event.preventDefault();
-
-                    return;
-                }
-
-
-                playEnterRoom();
-            }
-        );
-
-
-    /*
-     Give navigation cards click feedback.
-    */
-
-    const navigationLinks =
-        document.querySelectorAll(
-            "a.navigation-card"
-        );
-
-
-    navigationLinks.forEach(
-        (link) => {
-
-            link.addEventListener(
-                "click",
-                (event) => {
-
-                    if (
-                        !runtime.readmeAccepted
-                    ) {
-                        event.preventDefault();
-
-                        return;
-                    }
-
-
-                    playClick();
-                }
-            );
-        }
-    );
-}
-
-
-/* =========================================================
-   GLOBAL EVENTS
-========================================================= */
-
-function bindGlobalEvents() {
-
-    document.addEventListener(
-        "keydown",
-        handleGlobalKeydown
-    );
-
-
-    /*
-     Capture all clicks while README remains mandatory.
-
-     This is redundant with the overlay visually blocking the
-     page, but also protects keyboard/programmatic link
-     activation.
-    */
-
-    document.addEventListener(
-        "click",
-        preventInteractionBeforeReadme,
-        true
-    );
-
-
-    window.addEventListener(
-        "pagehide",
-        () => {
-
-            pauseBgm();
-        }
-    );
-}
-
-
-/* =========================================================
-   PREVENT PRE-README INTERACTION
-========================================================= */
-
-function preventInteractionBeforeReadme(
-    event
-) {
-
-    if (
-        runtime.readmeAccepted
-    ) {
-        return;
-    }
-
-
-    if (
-        elements.readmeModal &&
-        elements.readmeModal.contains(
-            event.target
-        )
-    ) {
-        return;
-    }
-
-
-    event.preventDefault();
-
-    event.stopPropagation();
-}
-
-
-/* =========================================================
    KEYBOARD
 ========================================================= */
 
-function handleGlobalKeydown(
+function handleKeydown(
     event
 ) {
 
+    if (
+        event.key !==
+        "Escape"
+    ) {
+        return;
+    }
+
+
     /*
-     README deliberately ignores Escape.
+     README intentionally cannot be closed with Escape.
     */
 
     if (
@@ -1281,41 +1272,33 @@ function handleGlobalKeydown(
 
 
     if (
-        event.key !==
-        "Escape"
-    ) {
-        return;
-    }
-
-
-    if (
-        isElementVisible(
-            elements.settingsModal
-        )
-    ) {
-
-        closeSettingsModal();
-
-        return;
-    }
-
-
-    if (
-        isElementVisible(
+        isElementOpen(
             elements.statisticsModal
         )
     ) {
 
-        closeStatisticsModal();
+        closeStatistics();
+
+        return;
+    }
+
+
+    if (
+        isElementOpen(
+            elements.settingsModal
+        )
+    ) {
+
+        closeSettings();
     }
 }
 
 
 /* =========================================================
-   VISIBLE HELPER
+   ELEMENT OPEN CHECK
 ========================================================= */
 
-function isElementVisible(
+function isElementOpen(
     element
 ) {
 
@@ -1331,6 +1314,19 @@ function isElementVisible(
         )
     );
 }
+
+
+/* =========================================================
+   PAGE HIDE
+========================================================= */
+
+window.addEventListener(
+    "pagehide",
+    () => {
+
+        pauseBgm();
+    }
+);
 
 
 /* =========================================================
