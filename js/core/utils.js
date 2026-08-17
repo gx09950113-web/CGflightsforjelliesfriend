@@ -2,20 +2,24 @@
    CG FLIGHT
    js/core/utils.js
 
-   Stateless utility helpers.
+   Shared utility layer.
 
    Responsibilities:
-   - Number helpers
-   - Clamp / round helpers
-   - Random helpers
-   - Formatting
-   - Delay / timing helpers
-   - Safe DOM helpers
-   - ID generation
-   - Object / value helpers
+   - Numeric validation / normalization
+   - Number formatting
+   - Multiplier formatting
+   - Date / time formatting
+   - Duration formatting
+   - Safe object cloning
+   - DOM visibility helpers
+   - DOM text / disabled helpers
+   - Generic value clamping
 
    IMPORTANT:
-   This module contains no game rules and no persistence.
+   This module must remain:
+   - stateless
+   - side-effect free where possible
+   - independent from game modules
 ========================================================= */
 
 
@@ -23,7 +27,19 @@
    NUMBER VALIDATION
 ========================================================= */
 
-function isFiniteNumber(value) {
+/**
+ * Returns true only for a real finite number.
+ *
+ * Examples:
+ *   isFiniteNumber(10)       -> true
+ *   isFiniteNumber(1.5)      -> true
+ *   isFiniteNumber(NaN)      -> false
+ *   isFiniteNumber(Infinity) -> false
+ *   isFiniteNumber("10")     -> false
+ */
+function isFiniteNumber(
+    value
+) {
     return (
         typeof value === "number" &&
         Number.isFinite(value)
@@ -31,18 +47,56 @@ function isFiniteNumber(value) {
 }
 
 
-function isPositiveNumber(value) {
-    return (
-        isFiniteNumber(value) &&
-        value > 0
-    );
+/* =========================================================
+   NUMERIC CONVERSION
+========================================================= */
+
+/**
+ * Converts value to a finite number.
+ * Returns fallback when conversion fails.
+ */
+function toFiniteNumber(
+    value,
+    fallback = 0
+) {
+    const numeric =
+        Number(value);
+
+
+    return Number.isFinite(
+        numeric
+    )
+        ? numeric
+        : fallback;
 }
 
 
-function isNonNegativeNumber(value) {
-    return (
-        isFiniteNumber(value) &&
-        value >= 0
+/* =========================================================
+   INTEGER CONVERSION
+========================================================= */
+
+/**
+ * Converts value into an integer.
+ */
+function toInteger(
+    value,
+    fallback = 0
+) {
+    const numeric =
+        Number(value);
+
+
+    if (
+        !Number.isFinite(
+            numeric
+        )
+    ) {
+        return fallback;
+    }
+
+
+    return Math.trunc(
+        numeric
     );
 }
 
@@ -51,33 +105,64 @@ function isNonNegativeNumber(value) {
    CLAMP
 ========================================================= */
 
+/**
+ * Restricts a value to the inclusive [min, max] range.
+ */
 function clamp(
     value,
     min,
     max
 ) {
-    if (!isFiniteNumber(value)) {
-        return min;
+    const numeric =
+        Number(value);
+
+
+    const minimum =
+        Number(min);
+
+
+    const maximum =
+        Number(max);
+
+
+    if (
+        !Number.isFinite(
+            numeric
+        ) ||
+        !Number.isFinite(
+            minimum
+        ) ||
+        !Number.isFinite(
+            maximum
+        )
+    ) {
+        return numeric;
     }
 
-    if (!isFiniteNumber(min)) {
-        min = 0;
-    }
 
-    if (!isFiniteNumber(max)) {
-        max = min;
-    }
+    /*
+     Handle reversed arguments safely.
+    */
 
-    if (min > max) {
-        [min, max] =
-            [max, min];
-    }
+    const lower =
+        Math.min(
+            minimum,
+            maximum
+        );
+
+
+    const upper =
+        Math.max(
+            minimum,
+            maximum
+        );
+
 
     return Math.min(
-        max,
+        upper,
         Math.max(
-            min,
-            value
+            lower,
+            numeric
         )
     );
 }
@@ -87,269 +172,379 @@ function clamp(
    ROUND
 ========================================================= */
 
+/**
+ * Rounds a number to a given number of decimal places.
+ *
+ * Uses Number.EPSILON to reduce common floating point cases:
+ *
+ *   1.005 -> 1.01
+ */
 function roundTo(
     value,
     decimals = 2
 ) {
-    if (!isFiniteNumber(value)) {
+    const numeric =
+        Number(value);
+
+
+    if (
+        !Number.isFinite(
+            numeric
+        )
+    ) {
         return 0;
     }
 
+
     const safeDecimals =
-        Number.isInteger(decimals)
-            ? clamp(decimals, 0, 10)
-            : 2;
+        clamp(
+            Math.trunc(
+                Number(decimals) || 0
+            ),
+            0,
+            12
+        );
+
 
     const factor =
-        10 ** safeDecimals;
+        10 **
+        safeDecimals;
+
 
     return (
         Math.round(
             (
-                value +
+                numeric +
                 Number.EPSILON
-            ) * factor
-        ) / factor
+            ) *
+            factor
+        ) /
+        factor
     );
 }
 
 
 /* =========================================================
-   FLOOR
+   FLOOR TO DECIMALS
 ========================================================= */
 
+/**
+ * Floors a number without rounding upward.
+ *
+ * Useful if gameplay ever needs conservative numeric
+ * truncation.
+ */
 function floorTo(
     value,
     decimals = 2
 ) {
-    if (!isFiniteNumber(value)) {
+    const numeric =
+        Number(value);
+
+
+    if (
+        !Number.isFinite(
+            numeric
+        )
+    ) {
         return 0;
     }
 
+
     const safeDecimals =
-        Number.isInteger(decimals)
-            ? clamp(decimals, 0, 10)
-            : 2;
+        clamp(
+            Math.trunc(
+                Number(decimals) || 0
+            ),
+            0,
+            12
+        );
+
 
     const factor =
-        10 ** safeDecimals;
+        10 **
+        safeDecimals;
+
 
     return (
         Math.floor(
-            value * factor
-        ) / factor
+            numeric *
+            factor
+        ) /
+        factor
     );
 }
 
 
 /* =========================================================
-   CEIL
+   RANDOM NUMBER
 ========================================================= */
 
-function ceilTo(
-    value,
-    decimals = 2
+/**
+ * Inclusive min, exclusive max floating point random number.
+ */
+function randomBetween(
+    min,
+    max
 ) {
-    if (!isFiniteNumber(value)) {
+    const minimum =
+        Number(min);
+
+
+    const maximum =
+        Number(max);
+
+
+    if (
+        !Number.isFinite(
+            minimum
+        ) ||
+        !Number.isFinite(
+            maximum
+        )
+    ) {
         return 0;
     }
 
-    const safeDecimals =
-        Number.isInteger(decimals)
-            ? clamp(decimals, 0, 10)
-            : 2;
 
-    const factor =
-        10 ** safeDecimals;
-
-    return (
-        Math.ceil(
-            value * factor
-        ) / factor
-    );
-}
+    const lower =
+        Math.min(
+            minimum,
+            maximum
+        );
 
 
-/* =========================================================
-   INTEGER CONVERSION
-========================================================= */
+    const upper =
+        Math.max(
+            minimum,
+            maximum
+        );
 
-function toSafeInteger(
-    value,
-    fallback = 0
-) {
-    const number =
-        Number(value);
 
     if (
-        !Number.isFinite(number)
+        lower === upper
     ) {
-        return fallback;
+        return lower;
     }
 
-    return Math.trunc(number);
+
+    return (
+        lower +
+        Math.random() *
+        (
+            upper -
+            lower
+        )
+    );
 }
 
 
 /* =========================================================
    RANDOM INTEGER
-
-   Inclusive min and max.
 ========================================================= */
 
-function randomInt(
+/**
+ * Inclusive integer random range.
+ */
+function randomInteger(
     min,
     max
 ) {
-    let safeMin =
+    const minimum =
         Math.ceil(
             Number(min)
         );
 
-    let safeMax =
+
+    const maximum =
         Math.floor(
             Number(max)
         );
 
+
     if (
-        !Number.isFinite(safeMin) ||
-        !Number.isFinite(safeMax)
+        !Number.isFinite(
+            minimum
+        ) ||
+        !Number.isFinite(
+            maximum
+        )
     ) {
         return 0;
     }
 
-    if (safeMin > safeMax) {
-        [safeMin, safeMax] =
-            [safeMax, safeMin];
-    }
+
+    const lower =
+        Math.min(
+            minimum,
+            maximum
+        );
+
+
+    const upper =
+        Math.max(
+            minimum,
+            maximum
+        );
+
 
     return (
         Math.floor(
             Math.random() *
             (
-                safeMax -
-                safeMin +
+                upper -
+                lower +
                 1
             )
         ) +
-        safeMin
+        lower
     );
 }
 
 
 /* =========================================================
-   RANDOM FLOAT
+   SAFE CLONE
 ========================================================= */
 
-function randomFloat(
-    min,
-    max
+/**
+ * Creates a deep clone of common game data.
+ *
+ * structuredClone is preferred because it safely handles
+ * more data types than JSON serialization.
+ *
+ * JSON fallback is sufficient for the plain object data
+ * currently stored by CG Flight.
+ */
+function clone(
+    value
 ) {
-    let safeMin =
-        Number(min);
-
-    let safeMax =
-        Number(max);
-
     if (
-        !Number.isFinite(safeMin) ||
-        !Number.isFinite(safeMax)
-    ) {
-        return 0;
-    }
-
-    if (safeMin > safeMax) {
-        [safeMin, safeMax] =
-            [safeMax, safeMin];
-    }
-
-    return (
-        Math.random() *
-        (
-            safeMax -
-            safeMin
-        ) +
-        safeMin
-    );
-}
-
-
-/* =========================================================
-   RANDOM BOOLEAN
-========================================================= */
-
-function randomBoolean(
-    probability = 0.5
-) {
-    const safeProbability =
-        clamp(
-            Number(probability),
-            0,
-            1
-        );
-
-    return (
-        Math.random() <
-        safeProbability
-    );
-}
-
-
-/* =========================================================
-   RANDOM ARRAY ITEM
-========================================================= */
-
-function randomItem(array) {
-    if (
-        !Array.isArray(array) ||
-        array.length === 0
+        value === undefined
     ) {
         return undefined;
     }
 
-    return array[
-        randomInt(
-            0,
-            array.length - 1
-        )
-    ];
+
+    if (
+        value === null
+    ) {
+        return null;
+    }
+
+
+    if (
+        typeof structuredClone ===
+        "function"
+    ) {
+        try {
+            return structuredClone(
+                value
+            );
+        } catch (error) {
+            /*
+             Fall through to JSON/plain fallback.
+            */
+        }
+    }
+
+
+    try {
+        return JSON.parse(
+            JSON.stringify(
+                value
+            )
+        );
+    } catch (error) {
+
+        /*
+         Primitive values can safely be returned directly.
+        */
+
+        if (
+            typeof value !==
+            "object"
+        ) {
+            return value;
+        }
+
+
+        console.warn(
+            "[CG Flight] Unable to clone value:",
+            error
+        );
+
+
+        return value;
+    }
 }
 
 
 /* =========================================================
-   SHUFFLE
-
-   Returns a new array.
+   PLAIN OBJECT CHECK
 ========================================================= */
 
-function shuffleArray(array) {
-    if (!Array.isArray(array)) {
-        return [];
-    }
-
-    const copy = [...array];
-
-    for (
-        let i = copy.length - 1;
-        i > 0;
-        i -= 1
+function isPlainObject(
+    value
+) {
+    if (
+        value === null ||
+        typeof value !== "object"
     ) {
-        const j =
-            randomInt(
-                0,
-                i
-            );
-
-        [
-            copy[i],
-            copy[j]
-        ] = [
-            copy[j],
-            copy[i]
-        ];
+        return false;
     }
 
-    return copy;
+
+    const prototype =
+        Object.getPrototypeOf(
+            value
+        );
+
+
+    return (
+        prototype ===
+            Object.prototype ||
+        prototype ===
+            null
+    );
+}
+
+
+/* =========================================================
+   FORMAT GENERIC NUMBER
+========================================================= */
+
+/**
+ * Locale-aware numeric formatter.
+ */
+function formatNumber(
+    value,
+    {
+        minimumFractionDigits = 0,
+        maximumFractionDigits = 2
+    } = {}
+) {
+    const numeric =
+        Number(value);
+
+
+    if (
+        !Number.isFinite(
+            numeric
+        )
+    ) {
+        return "0";
+    }
+
+
+    return new Intl.NumberFormat(
+        "en-US",
+        {
+            minimumFractionDigits,
+            maximumFractionDigits
+        }
+    ).format(
+        numeric
+    );
 }
 
 
@@ -357,30 +552,52 @@ function shuffleArray(array) {
    FORMAT COINS
 ========================================================= */
 
+/**
+ * Formats virtual coin amounts with thousand separators.
+ *
+ * Examples:
+ *   1000     -> "1,000"
+ *   1234.5   -> "1,234.5"
+ *   1234.56  -> "1,234.56"
+ */
 function formatCoins(
-    amount,
-    {
-        maximumFractionDigits = 2
-    } = {}
+    value
 ) {
-    const number =
-        Number(amount);
+    const numeric =
+        Number(value);
 
-    if (!Number.isFinite(number)) {
+
+    if (
+        !Number.isFinite(
+            numeric
+        )
+    ) {
         return "0";
     }
 
-    return number.toLocaleString(
+
+    const rounded =
+        roundTo(
+            numeric,
+            2
+        );
+
+
+    return new Intl.NumberFormat(
         "en-US",
         {
-            minimumFractionDigits: 0,
-            maximumFractionDigits:
-                clamp(
-                    maximumFractionDigits,
-                    0,
-                    10
+            minimumFractionDigits:
+                Number.isInteger(
+                    rounded
                 )
+                    ? 0
+                    : 0,
+
+            maximumFractionDigits:
+                2
         }
+    ).format(
+        rounded
     );
 }
 
@@ -389,34 +606,111 @@ function formatCoins(
    FORMAT MULTIPLIER
 ========================================================= */
 
+/**
+ * Always renders multiplier with two decimals.
+ *
+ * Examples:
+ *   1       -> "1.00×"
+ *   2.5     -> "2.50×"
+ *   13.127  -> "13.13×"
+ */
 function formatMultiplier(
-    multiplier,
+    value,
     decimals = 2
 ) {
-    const value =
-        Number(multiplier);
+    const numeric =
+        Number(value);
+
 
     if (
-        !Number.isFinite(value) ||
-        value < 0
+        !Number.isFinite(
+            numeric
+        )
     ) {
         return "0.00×";
     }
 
+
     const safeDecimals =
-        Number.isInteger(decimals)
-            ? clamp(
-                decimals,
-                0,
-                6
-            )
-            : 2;
+        clamp(
+            Math.trunc(
+                Number(decimals) || 2
+            ),
+            0,
+            6
+        );
+
 
     return (
-        value.toFixed(
+        roundTo(
+            numeric,
             safeDecimals
-        ) + "×"
+        ).toFixed(
+            safeDecimals
+        ) +
+        "×"
     );
+}
+
+
+/* =========================================================
+   FORMAT SIGNED NUMBER
+========================================================= */
+
+/**
+ * Formats a number with explicit + sign for positive values.
+ *
+ * Examples:
+ *   1500  -> "+1,500"
+ *   -500  -> "-500"
+ *   0     -> "0"
+ */
+function formatSignedNumber(
+    value,
+    {
+        maximumFractionDigits = 2
+    } = {}
+) {
+    const numeric =
+        Number(value);
+
+
+    if (
+        !Number.isFinite(
+            numeric
+        )
+    ) {
+        return "0";
+    }
+
+
+    const absolute =
+        formatNumber(
+            Math.abs(
+                numeric
+            ),
+            {
+                minimumFractionDigits: 0,
+                maximumFractionDigits
+            }
+        );
+
+
+    if (
+        numeric > 0
+    ) {
+        return `+${absolute}`;
+    }
+
+
+    if (
+        numeric < 0
+    ) {
+        return `-${absolute}`;
+    }
+
+
+    return "0";
 }
 
 
@@ -426,110 +720,102 @@ function formatMultiplier(
 
 function formatPercent(
     value,
-    decimals = 1
+    decimals = 2
 ) {
-    const number =
+    const numeric =
         Number(value);
 
-    if (!Number.isFinite(number)) {
-        return "0%";
-    }
-
-    const safeDecimals =
-        Number.isInteger(decimals)
-            ? clamp(
-                decimals,
-                0,
-                6
-            )
-            : 1;
-
-    return (
-        number.toFixed(
-            safeDecimals
-        ) + "%"
-    );
-}
-
-
-/* =========================================================
-   FORMAT SIGNED NUMBER
-========================================================= */
-
-function formatSignedNumber(
-    value,
-    {
-        maximumFractionDigits = 2
-    } = {}
-) {
-    const number =
-        Number(value);
-
-    if (!Number.isFinite(number)) {
-        return "0";
-    }
-
-    const formatted =
-        formatCoins(
-            Math.abs(number),
-            {
-                maximumFractionDigits
-            }
-        );
-
-    if (number > 0) {
-        return `+${formatted}`;
-    }
-
-    if (number < 0) {
-        return `-${formatted}`;
-    }
-
-    return formatted;
-}
-
-
-/* =========================================================
-   FORMAT DATE/TIME
-
-   Uses the user's local browser time.
-========================================================= */
-
-function formatDateTime(
-    value,
-    {
-        includeSeconds = false
-    } = {}
-) {
-    const date =
-        value instanceof Date
-            ? value
-            : new Date(value);
 
     if (
-        Number.isNaN(
-            date.getTime()
+        !Number.isFinite(
+            numeric
         )
     ) {
-        return "—";
+        return "0.00%";
     }
 
-    return date.toLocaleString(
-        "zh-TW",
-        {
-            year: "numeric",
-            month: "2-digit",
-            day: "2-digit",
-            hour: "2-digit",
-            minute: "2-digit",
 
-            ...(includeSeconds
-                ? {
-                    second: "2-digit"
-                }
-                : {})
-        }
+    const safeDecimals =
+        clamp(
+            Math.trunc(
+                Number(decimals) || 2
+            ),
+            0,
+            6
+        );
+
+
+    return (
+        roundTo(
+            numeric,
+            safeDecimals
+        ).toFixed(
+            safeDecimals
+        ) +
+        "%"
     );
+}
+
+
+/* =========================================================
+   DATE PARSING
+========================================================= */
+
+function parseDateValue(
+    value
+) {
+    if (
+        value instanceof Date
+    ) {
+
+        return Number.isNaN(
+            value.getTime()
+        )
+            ? null
+            : new Date(
+                value.getTime()
+            );
+    }
+
+
+    if (
+        typeof value === "number"
+    ) {
+
+        const date =
+            new Date(
+                value
+            );
+
+
+        return Number.isNaN(
+            date.getTime()
+        )
+            ? null
+            : date;
+    }
+
+
+    if (
+        typeof value === "string" &&
+        value.trim().length > 0
+    ) {
+
+        const date =
+            new Date(
+                value
+            );
+
+
+        return Number.isNaN(
+            date.getTime()
+        )
+            ? null
+            : date;
+    }
+
+
+    return null;
 }
 
 
@@ -537,27 +823,37 @@ function formatDateTime(
    FORMAT DATE
 ========================================================= */
 
-function formatDate(value) {
+function formatDate(
+    value,
+    {
+        locale = "zh-TW"
+    } = {}
+) {
     const date =
-        value instanceof Date
-            ? value
-            : new Date(value);
+        parseDateValue(
+            value
+        );
 
-    if (
-        Number.isNaN(
-            date.getTime()
-        )
-    ) {
+
+    if (!date) {
         return "—";
     }
 
-    return date.toLocaleDateString(
-        "zh-TW",
+
+    return new Intl.DateTimeFormat(
+        locale,
         {
-            year: "numeric",
-            month: "2-digit",
-            day: "2-digit"
+            year:
+                "numeric",
+
+            month:
+                "2-digit",
+
+            day:
+                "2-digit"
         }
+    ).format(
+        date
     );
 }
 
@@ -569,275 +865,594 @@ function formatDate(value) {
 function formatTime(
     value,
     {
+        locale = "zh-TW",
         includeSeconds = false
     } = {}
 ) {
     const date =
-        value instanceof Date
-            ? value
-            : new Date(value);
+        parseDateValue(
+            value
+        );
+
+
+    if (!date) {
+        return "—";
+    }
+
+
+    const options = {
+
+        hour:
+            "2-digit",
+
+        minute:
+            "2-digit",
+
+        hour12:
+            false
+    };
+
 
     if (
-        Number.isNaN(
-            date.getTime()
-        )
+        includeSeconds
+    ) {
+        options.second =
+            "2-digit";
+    }
+
+
+    return new Intl.DateTimeFormat(
+        locale,
+        options
+    ).format(
+        date
+    );
+}
+
+
+/* =========================================================
+   FORMAT DATE + TIME
+========================================================= */
+
+/**
+ * Used heavily by History page.
+ */
+function formatDateTime(
+    value,
+    {
+        locale = "zh-TW",
+        includeSeconds = false
+    } = {}
+) {
+    const date =
+        parseDateValue(
+            value
+        );
+
+
+    if (!date) {
+        return "—";
+    }
+
+
+    const options = {
+
+        year:
+            "numeric",
+
+        month:
+            "2-digit",
+
+        day:
+            "2-digit",
+
+        hour:
+            "2-digit",
+
+        minute:
+            "2-digit",
+
+        hour12:
+            false
+    };
+
+
+    if (
+        includeSeconds
+    ) {
+        options.second =
+            "2-digit";
+    }
+
+
+    return new Intl.DateTimeFormat(
+        locale,
+        options
+    ).format(
+        date
+    );
+}
+
+
+/* =========================================================
+   FORMAT DURATION
+========================================================= */
+
+/**
+ * Formats milliseconds into a compact readable duration.
+ *
+ * Examples:
+ *   0       -> "0.00 s"
+ *   1530    -> "1.53 s"
+ *   65000   -> "1m 05s"
+ *   3661000 -> "1h 01m 01s"
+ */
+function formatDuration(
+    milliseconds
+) {
+    const numeric =
+        Number(
+            milliseconds
+        );
+
+
+    if (
+        !Number.isFinite(
+            numeric
+        ) ||
+        numeric < 0
     ) {
         return "—";
     }
 
-    return date.toLocaleTimeString(
-        "zh-TW",
-        {
-            hour: "2-digit",
-            minute: "2-digit",
-
-            ...(includeSeconds
-                ? {
-                    second: "2-digit"
-                }
-                : {})
-        }
-    );
-}
-
-
-/* =========================================================
-   DURATION
-========================================================= */
-
-function formatDuration(
-    milliseconds
-) {
-    const ms =
-        Number(milliseconds);
 
     if (
-        !Number.isFinite(ms) ||
-        ms < 0
+        numeric <
+        60000
     ) {
-        return "00:00";
+
+        const seconds =
+            numeric /
+            1000;
+
+
+        return (
+            `${roundTo(
+                seconds,
+                2
+            ).toFixed(2)} s`
+        );
     }
+
 
     const totalSeconds =
         Math.floor(
-            ms / 1000
+            numeric /
+            1000
         );
+
+
+    const hours =
+        Math.floor(
+            totalSeconds /
+            3600
+        );
+
 
     const minutes =
         Math.floor(
-            totalSeconds / 60
+            (
+                totalSeconds %
+                3600
+            ) /
+            60
         );
+
 
     const seconds =
-        totalSeconds % 60;
+        totalSeconds %
+        60;
 
-    return [
-        String(minutes)
-            .padStart(
+
+    if (
+        hours > 0
+    ) {
+        return (
+            `${hours}h ` +
+            `${String(
+                minutes
+            ).padStart(
                 2,
                 "0"
-            ),
-
-        String(seconds)
-            .padStart(
+            )}m ` +
+            `${String(
+                seconds
+            ).padStart(
                 2,
                 "0"
+            )}s`
+        );
+    }
+
+
+    return (
+        `${minutes}m ` +
+        `${String(
+            seconds
+        ).padStart(
+            2,
+            "0"
+        )}s`
+    );
+}
+
+
+/* =========================================================
+   DATE KEY
+
+   Produces a LOCAL calendar date key.
+
+   Used by login/day tracking logic when needed.
+
+   IMPORTANT:
+   This intentionally does NOT use toISOString(), because
+   UTC conversion can shift the local calendar day.
+========================================================= */
+
+function getLocalDateKey(
+    value =
+        new Date()
+) {
+    const date =
+        parseDateValue(
+            value
+        );
+
+
+    if (!date) {
+        return null;
+    }
+
+
+    const year =
+        date.getFullYear();
+
+
+    const month =
+        String(
+            date.getMonth() +
+            1
+        ).padStart(
+            2,
+            "0"
+        );
+
+
+    const day =
+        String(
+            date.getDate()
+        ).padStart(
+            2,
+            "0"
+        );
+
+
+    return (
+        `${year}-${month}-${day}`
+    );
+}
+
+
+/* =========================================================
+   DAY DIFFERENCE
+
+   Compares local calendar dates rather than raw 24-hour
+   intervals, avoiding DST/time-of-day issues.
+========================================================= */
+
+function getCalendarDayDifference(
+    from,
+    to
+) {
+    const fromDate =
+        parseDateValue(
+            from
+        );
+
+
+    const toDate =
+        parseDateValue(
+            to
+        );
+
+
+    if (
+        !fromDate ||
+        !toDate
+    ) {
+        return null;
+    }
+
+
+    const fromUtc =
+        Date.UTC(
+            fromDate.getFullYear(),
+            fromDate.getMonth(),
+            fromDate.getDate()
+        );
+
+
+    const toUtc =
+        Date.UTC(
+            toDate.getFullYear(),
+            toDate.getMonth(),
+            toDate.getDate()
+        );
+
+
+    return Math.round(
+        (
+            toUtc -
+            fromUtc
+        ) /
+        86400000
+    );
+}
+
+
+/* =========================================================
+   DOM: SHOW ELEMENT
+
+   Removes BOTH:
+   - hidden attribute
+   - .is-hidden
+
+   This matches common.css.
+========================================================= */
+
+function showElement(
+    element
+) {
+    if (!element) {
+        return false;
+    }
+
+
+    element.hidden =
+        false;
+
+
+    element.classList.remove(
+        "is-hidden"
+    );
+
+
+    return true;
+}
+
+
+/* =========================================================
+   DOM: HIDE ELEMENT
+========================================================= */
+
+function hideElement(
+    element
+) {
+    if (!element) {
+        return false;
+    }
+
+
+    element.hidden =
+        true;
+
+
+    element.classList.add(
+        "is-hidden"
+    );
+
+
+    return true;
+}
+
+
+/* =========================================================
+   DOM: TOGGLE ELEMENT
+========================================================= */
+
+function toggleElement(
+    element,
+    visible
+) {
+    return visible
+        ? showElement(
+            element
+        )
+        : hideElement(
+            element
+        );
+}
+
+
+/* =========================================================
+   DOM: VISIBLE CHECK
+========================================================= */
+
+function isElementVisible(
+    element
+) {
+    if (!element) {
+        return false;
+    }
+
+
+    return (
+        !element.hidden &&
+        !element.classList.contains(
+            "is-hidden"
+        )
+    );
+}
+
+
+/* =========================================================
+   DOM: SET TEXT
+========================================================= */
+
+/**
+ * Safely updates textContent.
+ *
+ * null / undefined render as empty strings.
+ */
+function setText(
+    element,
+    value
+) {
+    if (!element) {
+        return false;
+    }
+
+
+    element.textContent =
+        value === null ||
+        value === undefined
+            ? ""
+            : String(value);
+
+
+    return true;
+}
+
+
+/* =========================================================
+   DOM: SET DISABLED
+========================================================= */
+
+function setDisabled(
+    element,
+    disabled = true
+) {
+    if (!element) {
+        return false;
+    }
+
+
+    element.disabled =
+        Boolean(
+            disabled
+        );
+
+
+    return true;
+}
+
+
+/* =========================================================
+   DOM: SET ARIA PRESSED
+========================================================= */
+
+function setAriaPressed(
+    element,
+    pressed
+) {
+    if (!element) {
+        return false;
+    }
+
+
+    element.setAttribute(
+        "aria-pressed",
+        String(
+            Boolean(
+                pressed
             )
-    ].join(":");
+        )
+    );
+
+
+    return true;
 }
 
 
 /* =========================================================
-   SLEEP
+   DOM: SAFE CLASS TOGGLE
 ========================================================= */
 
-function sleep(milliseconds) {
-    const ms =
-        Math.max(
-            0,
-            Number(milliseconds) || 0
+function toggleClass(
+    element,
+    className,
+    force
+) {
+    if (
+        !element ||
+        typeof className !==
+            "string" ||
+        className.length === 0
+    ) {
+        return false;
+    }
+
+
+    if (
+        typeof force ===
+        "boolean"
+    ) {
+
+        element.classList.toggle(
+            className,
+            force
         );
 
-    return new Promise(
-        (resolve) => {
-            setTimeout(
-                resolve,
-                ms
-            );
-        }
+
+        return force;
+    }
+
+
+    return element.classList.toggle(
+        className
     );
 }
 
 
 /* =========================================================
-   NEXT ANIMATION FRAME
+   STRING SAFETY
 ========================================================= */
 
-function nextFrame() {
-    return new Promise(
-        (resolve) => {
-            requestAnimationFrame(
-                resolve
-            );
-        }
-    );
-}
-
-
-/* =========================================================
-   TWO ANIMATION FRAMES
-
-   Useful when waiting for layout/style changes to commit.
-========================================================= */
-
-async function nextPaint() {
-    await nextFrame();
-    await nextFrame();
-}
-
-
-/* =========================================================
-   DEBOUNCE
-========================================================= */
-
-function debounce(
-    callback,
-    delay = 200
+function normalizeString(
+    value,
+    fallback = ""
 ) {
     if (
-        typeof callback !==
-        "function"
+        value === null ||
+        value === undefined
     ) {
-        throw new TypeError(
-            "[CG Flight] debounce requires a function."
-        );
+        return fallback;
     }
 
-    let timeoutId = null;
 
-    return function debounced(
-        ...args
-    ) {
-        const context = this;
-
-        if (timeoutId !== null) {
-            clearTimeout(
-                timeoutId
-            );
-        }
-
-        timeoutId =
-            setTimeout(
-                () => {
-                    timeoutId = null;
-
-                    callback.apply(
-                        context,
-                        args
-                    );
-                },
-                Math.max(
-                    0,
-                    Number(delay) || 0
-                )
-            );
-    };
-}
-
-
-/* =========================================================
-   THROTTLE
-========================================================= */
-
-function throttle(
-    callback,
-    interval = 100
-) {
-    if (
-        typeof callback !==
-        "function"
-    ) {
-        throw new TypeError(
-            "[CG Flight] throttle requires a function."
-        );
-    }
-
-    let lastRun = 0;
-    let trailingTimer = null;
-
-    return function throttled(
-        ...args
-    ) {
-        const now =
-            Date.now();
-
-        const remaining =
-            interval -
-            (
-                now -
-                lastRun
-            );
-
-        const context = this;
-
-        if (remaining <= 0) {
-            if (
-                trailingTimer !==
-                null
-            ) {
-                clearTimeout(
-                    trailingTimer
-                );
-
-                trailingTimer = null;
-            }
-
-            lastRun = now;
-
-            callback.apply(
-                context,
-                args
-            );
-
-            return;
-        }
-
-        if (
-            trailingTimer ===
-            null
-        ) {
-            trailingTimer =
-                setTimeout(
-                    () => {
-                        trailingTimer = null;
-
-                        lastRun =
-                            Date.now();
-
-                        callback.apply(
-                            context,
-                            args
-                        );
-                    },
-                    remaining
-                );
-        }
-    };
+    return String(
+        value
+    ).trim();
 }
 
 
 /* =========================================================
    UNIQUE ID
+
+   Used for lightweight local transaction/round IDs if any
+   module needs a generic fallback.
 ========================================================= */
 
 function createId(
     prefix = "id"
 ) {
     const safePrefix =
-        typeof prefix === "string" &&
-        prefix.length > 0
-            ? prefix
-            : "id";
+        normalizeString(
+            prefix,
+            "id"
+        ) ||
+        "id";
+
 
     if (
         typeof crypto !==
@@ -851,305 +1466,45 @@ function createId(
         );
     }
 
-    return [
-        safePrefix,
-        Date.now(),
-        Math.random()
+
+    return (
+        `${safePrefix}-` +
+        `${Date.now().toString(36)}-` +
+        `${Math.random()
             .toString(36)
-            .slice(2, 10)
-    ].join("-");
-}
-
-
-/* =========================================================
-   SAFE JSON CLONE
-========================================================= */
-
-function clone(value) {
-    if (
-        typeof structuredClone ===
-        "function"
-    ) {
-        return structuredClone(
-            value
-        );
-    }
-
-    return JSON.parse(
-        JSON.stringify(value)
+            .slice(2, 10)}`
     );
 }
 
 
 /* =========================================================
-   PLAIN OBJECT
+   DELAY
+
+   Generic async utility.
 ========================================================= */
 
-function isPlainObject(value) {
-    if (
-        value === null ||
-        typeof value !== "object"
-    ) {
-        return false;
-    }
-
-    if (Array.isArray(value)) {
-        return false;
-    }
-
-    const prototype =
-        Object.getPrototypeOf(
-            value
-        );
-
-    return (
-        prototype ===
-            Object.prototype ||
-        prototype === null
-    );
-}
-
-
-/* =========================================================
-   SAFE STRING
-========================================================= */
-
-function safeString(
-    value,
-    fallback = ""
+function delay(
+    milliseconds
 ) {
-    if (
-        value === null ||
-        value === undefined
-    ) {
-        return fallback;
-    }
-
-    return String(value);
-}
-
-
-/* =========================================================
-   NON-EMPTY STRING
-========================================================= */
-
-function isNonEmptyString(
-    value
-) {
-    return (
-        typeof value === "string" &&
-        value.trim().length > 0
-    );
-}
-
-
-/* =========================================================
-   DOM QUERY
-========================================================= */
-
-function query(
-    selector,
-    root = document
-) {
-    if (
-        typeof selector !==
-        "string"
-    ) {
-        return null;
-    }
-
-    try {
-        return root.querySelector(
-            selector
-        );
-    } catch {
-        return null;
-    }
-}
-
-
-/* =========================================================
-   DOM QUERY ALL
-========================================================= */
-
-function queryAll(
-    selector,
-    root = document
-) {
-    if (
-        typeof selector !==
-        "string"
-    ) {
-        return [];
-    }
-
-    try {
-        return [
-            ...root.querySelectorAll(
-                selector
+    const safeMs =
+        Math.max(
+            0,
+            toFiniteNumber(
+                milliseconds,
+                0
             )
-        ];
-    } catch {
-        return [];
-    }
-}
-
-
-/* =========================================================
-   SET TEXT
-========================================================= */
-
-function setText(
-    element,
-    value
-) {
-    if (!element) {
-        return false;
-    }
-
-    element.textContent =
-        safeString(value);
-
-    return true;
-}
-
-
-/* =========================================================
-   SET HIDDEN
-========================================================= */
-
-function setHidden(
-    element,
-    hidden
-) {
-    if (!element) {
-        return false;
-    }
-
-    const shouldHide =
-        Boolean(hidden);
-
-    element.hidden =
-        shouldHide;
-
-    element.classList.toggle(
-        "is-hidden",
-        shouldHide
-    );
-
-    element.setAttribute(
-        "aria-hidden",
-        String(shouldHide)
-    );
-
-    return true;
-}
-
-
-/* =========================================================
-   SHOW ELEMENT
-========================================================= */
-
-function showElement(element) {
-    return setHidden(
-        element,
-        false
-    );
-}
-
-
-/* =========================================================
-   HIDE ELEMENT
-========================================================= */
-
-function hideElement(element) {
-    return setHidden(
-        element,
-        true
-    );
-}
-
-
-/* =========================================================
-   DISABLE ELEMENT
-========================================================= */
-
-function setDisabled(
-    element,
-    disabled
-) {
-    if (!element) {
-        return false;
-    }
-
-    element.disabled =
-        Boolean(disabled);
-
-    element.setAttribute(
-        "aria-disabled",
-        String(
-            Boolean(disabled)
-        )
-    );
-
-    return true;
-}
-
-
-/* =========================================================
-   SAFE FOCUS
-========================================================= */
-
-function focusElement(
-    element
-) {
-    if (
-        !element ||
-        typeof element.focus !==
-            "function"
-    ) {
-        return false;
-    }
-
-    try {
-        element.focus();
-
-        return true;
-    } catch {
-        return false;
-    }
-}
-
-
-/* =========================================================
-   ESCAPE HTML
-
-   Useful if future modules need to construct safe strings.
-   Prefer textContent whenever possible.
-========================================================= */
-
-function escapeHtml(value) {
-    return safeString(value)
-        .replace(
-            /&/g,
-            "&amp;"
-        )
-        .replace(
-            /</g,
-            "&lt;"
-        )
-        .replace(
-            />/g,
-            "&gt;"
-        )
-        .replace(
-            /"/g,
-            "&quot;"
-        )
-        .replace(
-            /'/g,
-            "&#039;"
         );
+
+
+    return new Promise(
+        (resolve) => {
+
+            window.setTimeout(
+                resolve,
+                safeMs
+            );
+        }
+    );
 }
 
 
@@ -1158,53 +1513,53 @@ function escapeHtml(value) {
 ========================================================= */
 
 export {
+    /* Numeric */
     isFiniteNumber,
-    isPositiveNumber,
-    isNonNegativeNumber,
+    toFiniteNumber,
+    toInteger,
 
     clamp,
     roundTo,
     floorTo,
-    ceilTo,
-    toSafeInteger,
 
-    randomInt,
-    randomFloat,
-    randomBoolean,
-    randomItem,
-    shuffleArray,
+    randomBetween,
+    randomInteger,
 
-    formatCoins,
-    formatMultiplier,
-    formatPercent,
-    formatSignedNumber,
-    formatDateTime,
-    formatDate,
-    formatTime,
-    formatDuration,
-
-    sleep,
-    nextFrame,
-    nextPaint,
-
-    debounce,
-    throttle,
-
-    createId,
-
+    /* Object */
     clone,
     isPlainObject,
-    safeString,
-    isNonEmptyString,
 
-    query,
-    queryAll,
-    setText,
-    setHidden,
+    /* Formatting */
+    formatNumber,
+    formatCoins,
+    formatMultiplier,
+    formatSignedNumber,
+    formatPercent,
+
+    /* Date */
+    parseDateValue,
+    formatDate,
+    formatTime,
+    formatDateTime,
+    formatDuration,
+    getLocalDateKey,
+    getCalendarDayDifference,
+
+    /* DOM */
     showElement,
     hideElement,
-    setDisabled,
-    focusElement,
+    toggleElement,
+    isElementVisible,
 
-    escapeHtml
+    setText,
+    setDisabled,
+    setAriaPressed,
+    toggleClass,
+
+    /* String / IDs */
+    normalizeString,
+    createId,
+
+    /* Async */
+    delay
 };
