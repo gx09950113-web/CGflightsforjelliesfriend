@@ -2,21 +2,25 @@
    CG FLIGHT
    js/core/audio.js
 
-   Audio management layer.
+   Global audio manager.
 
    Responsibilities:
-   - Manage BGM playback
-   - Manage SFX playback
+   - Preload BGM / SFX assets
+   - Play / pause Lobby and Game BGM
+   - Play one-shot sound effects
+   - Play / stop looped flight SFX
    - Respect persistent sound/music settings
-   - Handle browser autoplay restrictions
-   - Pause/resume audio on visibility changes
-   - Provide centralized audio paths
-   - Avoid duplicated audio instances
+   - React to settings changes
+   - Handle browser autoplay failures safely
+
+   IMPORTANT:
+   settings.js owns preferences.
+   audio.js owns actual playback.
 ========================================================= */
 
+
 import {
-    isSoundEnabled,
-    isMusicEnabled,
+    getSettings,
     subscribeToSettings
 } from "./settings.js";
 
@@ -28,6 +32,7 @@ import {
 const AUDIO_PATHS = Object.freeze({
 
     bgm: {
+
         lobby:
             "./assets/sounds/bgm/lobby.mp3",
 
@@ -35,7 +40,9 @@ const AUDIO_PATHS = Object.freeze({
             "./assets/sounds/bgm/game.mp3"
     },
 
+
     sfx: {
+
         click:
             "./assets/sounds/sfx/click.mp3",
 
@@ -82,561 +89,307 @@ const AUDIO_PATHS = Object.freeze({
 
 
 /* =========================================================
-   DEFAULT VOLUMES
+   AUDIO CONFIG
 ========================================================= */
 
-const DEFAULT_VOLUMES = Object.freeze({
+const AUDIO_CONFIG = Object.freeze({
 
-    master: 1,
+    bgmVolume:
+        0.32,
 
-    bgm: 0.45,
+    sfxVolume:
+        0.72,
 
-    sfx: 0.7,
+    flyingLoopVolume:
+        0.46,
 
-    specific: {
-        click: 0.55,
+    multiplierRiseVolume:
+        0.34,
 
-        enterRoom: 0.65,
+    fadeStepMs:
+        35,
 
-        loginReward: 0.7,
-
-        bet: 0.7,
-
-        betCancel: 0.65,
-
-        countdown: 0.75,
-
-        takeoff: 0.8,
-
-        flyingLoop: 0.35,
-
-        multiplierRise: 0.4,
-
-        cashout: 0.8,
-
-        autoCashout: 0.8,
-
-        crash: 0.9,
-
-        win: 0.85,
-
-        insufficientBalance: 0.75
-    }
+    fadeDurationMs:
+        280
 });
 
 
 /* =========================================================
-   INTERNAL STATE
+   RUNTIME
 ========================================================= */
 
-const audioState = {
+const runtime = {
 
-    masterVolume:
-        DEFAULT_VOLUMES.master,
+    initialized:
+        false,
 
-    bgmVolume:
-        DEFAULT_VOLUMES.bgm,
+    currentBgmKey:
+        null,
 
-    sfxVolume:
-        DEFAULT_VOLUMES.sfx,
+    bgm:
+        new Map(),
 
-    currentBgmKey: null,
+    sfx:
+        new Map(),
 
-    currentBgm: null,
+    activeLoops:
+        new Set(),
 
-    bgmWasPlayingBeforeHidden: false,
-
-    userHasInteracted: false
+    settingsUnsubscribe:
+        null
 };
 
 
 /* =========================================================
-   AUDIO CACHE
+   CREATE AUDIO
 ========================================================= */
 
-const bgmCache = new Map();
-
-const sfxCache = new Map();
-
-
-/* =========================================================
-   VALUE HELPERS
-========================================================= */
-
-function clampVolume(value) {
-    if (
-        typeof value !== "number" ||
-        !Number.isFinite(value)
-    ) {
-        return 1;
-    }
-
-    return Math.min(
-        1,
-        Math.max(
-            0,
-            value
-        )
-    );
-}
-
-
-/* =========================================================
-   CREATE AUDIO ELEMENT
-========================================================= */
-
-function createAudioElement(
+function createAudio(
     src,
     {
         loop = false,
-        preload = "auto"
+        volume = 1
     } = {}
 ) {
+
     const audio =
-        new Audio(src);
+        new Audio(
+            src
+        );
+
+
+    audio.preload =
+        "auto";
+
 
     audio.loop =
         loop;
 
-    audio.preload =
-        preload;
-
-    return audio;
-}
-
-
-/* =========================================================
-   GET BGM INSTANCE
-========================================================= */
-
-function getBgmAudio(key) {
-    if (
-        !Object.prototype.hasOwnProperty.call(
-            AUDIO_PATHS.bgm,
-            key
-        )
-    ) {
-        return null;
-    }
-
-    if (
-        bgmCache.has(key)
-    ) {
-        return bgmCache.get(key);
-    }
-
-    const audio =
-        createAudioElement(
-            AUDIO_PATHS.bgm[key],
-            {
-                loop: true,
-                preload: "auto"
-            }
-        );
-
-    bgmCache.set(
-        key,
-        audio
-    );
-
-    return audio;
-}
-
-
-/* =========================================================
-   GET SFX INSTANCE
-========================================================= */
-
-function getSfxAudio(key) {
-    if (
-        !Object.prototype.hasOwnProperty.call(
-            AUDIO_PATHS.sfx,
-            key
-        )
-    ) {
-        return null;
-    }
-
-    if (
-        sfxCache.has(key)
-    ) {
-        return sfxCache.get(key);
-    }
-
-    const audio =
-        createAudioElement(
-            AUDIO_PATHS.sfx[key],
-            {
-                loop:
-                    key === "flyingLoop",
-
-                preload: "auto"
-            }
-        );
-
-    sfxCache.set(
-        key,
-        audio
-    );
-
-    return audio;
-}
-
-
-/* =========================================================
-   CALCULATE VOLUME
-========================================================= */
-
-function getEffectiveBgmVolume() {
-    return clampVolume(
-        audioState.masterVolume *
-        audioState.bgmVolume
-    );
-}
-
-
-function getEffectiveSfxVolume(
-    key,
-    overrideVolume = null
-) {
-    const specific =
-        overrideVolume !== null
-            ? clampVolume(
-                overrideVolume
-            )
-            : (
-                DEFAULT_VOLUMES
-                    .specific[key] ??
-                1
-            );
-
-    return clampVolume(
-        audioState.masterVolume *
-        audioState.sfxVolume *
-        specific
-    );
-}
-
-
-/* =========================================================
-   PLAY BGM
-========================================================= */
-
-async function playBgm(
-    key,
-    {
-        restart = false
-    } = {}
-) {
-    if (!isMusicEnabled()) {
-        return {
-            success: false,
-            reason: "MUSIC_DISABLED"
-        };
-    }
-
-    const audio =
-        getBgmAudio(key);
-
-    if (!audio) {
-        return {
-            success: false,
-            reason: "UNKNOWN_BGM"
-        };
-    }
-
-
-    /* -----------------------------------------------------
-       Same BGM already active
-    ----------------------------------------------------- */
-
-    if (
-        audioState.currentBgmKey === key &&
-        audioState.currentBgm === audio
-    ) {
-        audio.volume =
-            getEffectiveBgmVolume();
-
-        if (
-            restart
-        ) {
-            try {
-                audio.currentTime = 0;
-            } catch {
-                /* Ignore seek errors. */
-            }
-        }
-
-        if (!audio.paused) {
-            return {
-                success: true,
-                alreadyPlaying: true
-            };
-        }
-    }
-
-
-    /* -----------------------------------------------------
-       Stop previous BGM
-    ----------------------------------------------------- */
-
-    if (
-        audioState.currentBgm &&
-        audioState.currentBgm !== audio
-    ) {
-        audioState.currentBgm.pause();
-
-        try {
-            audioState.currentBgm.currentTime = 0;
-        } catch {
-            /* Ignore seek errors. */
-        }
-    }
-
-
-    audioState.currentBgmKey =
-        key;
-
-    audioState.currentBgm =
-        audio;
 
     audio.volume =
-        getEffectiveBgmVolume();
-
-
-    if (restart) {
-        try {
-            audio.currentTime = 0;
-        } catch {
-            /* Ignore seek errors. */
-        }
-    }
-
-
-    try {
-        await audio.play();
-
-        return {
-            success: true,
-            key
-        };
-    } catch (error) {
-        return {
-            success: false,
-            reason: "PLAYBACK_BLOCKED",
-            error
-        };
-    }
-}
-
-
-/* =========================================================
-   PAUSE BGM
-========================================================= */
-
-function pauseBgm() {
-    if (
-        !audioState.currentBgm
-    ) {
-        return false;
-    }
-
-    audioState.currentBgm.pause();
-
-    return true;
-}
-
-
-/* =========================================================
-   RESUME BGM
-========================================================= */
-
-async function resumeBgm() {
-    if (
-        !audioState.currentBgm ||
-        !audioState.currentBgmKey
-    ) {
-        return {
-            success: false,
-            reason: "NO_ACTIVE_BGM"
-        };
-    }
-
-    if (!isMusicEnabled()) {
-        return {
-            success: false,
-            reason: "MUSIC_DISABLED"
-        };
-    }
-
-    audioState.currentBgm.volume =
-        getEffectiveBgmVolume();
-
-    try {
-        await audioState.currentBgm.play();
-
-        return {
-            success: true,
-            key:
-                audioState.currentBgmKey
-        };
-    } catch (error) {
-        return {
-            success: false,
-            reason: "PLAYBACK_BLOCKED",
-            error
-        };
-    }
-}
-
-
-/* =========================================================
-   STOP BGM
-========================================================= */
-
-function stopBgm({
-    reset = true
-} = {}) {
-    if (
-        !audioState.currentBgm
-    ) {
-        return false;
-    }
-
-    audioState.currentBgm.pause();
-
-    if (reset) {
-        try {
-            audioState.currentBgm.currentTime = 0;
-        } catch {
-            /* Ignore seek errors. */
-        }
-    }
-
-    audioState.currentBgm =
-        null;
-
-    audioState.currentBgmKey =
-        null;
-
-    return true;
-}
-
-
-/* =========================================================
-   PLAY SFX
-========================================================= */
-
-async function playSfx(
-    key,
-    {
-        restart = true,
-        volume = null
-    } = {}
-) {
-    if (!isSoundEnabled()) {
-        return {
-            success: false,
-            reason: "SOUND_DISABLED"
-        };
-    }
-
-    const audio =
-        getSfxAudio(key);
-
-    if (!audio) {
-        return {
-            success: false,
-            reason: "UNKNOWN_SFX"
-        };
-    }
-
-    audio.volume =
-        getEffectiveSfxVolume(
-            key,
+        clampVolume(
             volume
         );
 
 
-    if (restart) {
-        try {
-            audio.pause();
-            audio.currentTime = 0;
-        } catch {
-            /* Ignore seek errors. */
-        }
-    }
-
-
-    try {
-        await audio.play();
-
-        return {
-            success: true,
-            key
-        };
-    } catch (error) {
-        return {
-            success: false,
-            reason: "PLAYBACK_BLOCKED",
-            error
-        };
-    }
+    return audio;
 }
 
 
 /* =========================================================
-   STOP SFX
+   VOLUME CLAMP
 ========================================================= */
 
-function stopSfx(
-    key,
-    {
-        reset = true
-    } = {}
+function clampVolume(
+    value
 ) {
-    const audio =
-        sfxCache.get(key);
 
-    if (!audio) {
-        return false;
+    const numeric =
+        Number(value);
+
+
+    if (
+        !Number.isFinite(
+            numeric
+        )
+    ) {
+        return 1;
     }
 
-    audio.pause();
 
-    if (reset) {
-        try {
-            audio.currentTime = 0;
-        } catch {
-            /* Ignore seek errors. */
-        }
-    }
-
-    return true;
+    return Math.max(
+        0,
+        Math.min(
+            1,
+            numeric
+        )
+    );
 }
 
 
 /* =========================================================
-   STOP ALL SFX
+   INITIALIZE AUDIO MAPS
 ========================================================= */
 
-function stopAllSfx({
-    reset = true
-} = {}) {
-    for (
-        const audio
-        of sfxCache.values()
-    ) {
-        audio.pause();
+function initializeAudio() {
 
-        if (reset) {
-            try {
-                audio.currentTime = 0;
-            } catch {
-                /* Ignore seek errors. */
-            }
-        }
+    if (
+        runtime.initialized
+    ) {
+        return;
     }
+
+
+    /* -----------------------------------------------------
+       BGM
+    ----------------------------------------------------- */
+
+    runtime.bgm.set(
+        "lobby",
+        createAudio(
+            AUDIO_PATHS.bgm.lobby,
+            {
+                loop: true,
+                volume:
+                    AUDIO_CONFIG
+                        .bgmVolume
+            }
+        )
+    );
+
+
+    runtime.bgm.set(
+        "game",
+        createAudio(
+            AUDIO_PATHS.bgm.game,
+            {
+                loop: true,
+                volume:
+                    AUDIO_CONFIG
+                        .bgmVolume
+            }
+        )
+    );
+
+
+    /* -----------------------------------------------------
+       One-shot SFX
+    ----------------------------------------------------- */
+
+    const oneShotSfx = [
+
+        [
+            "click",
+            AUDIO_PATHS.sfx.click
+        ],
+
+        [
+            "enterRoom",
+            AUDIO_PATHS.sfx.enterRoom
+        ],
+
+        [
+            "loginReward",
+            AUDIO_PATHS.sfx.loginReward
+        ],
+
+        [
+            "bet",
+            AUDIO_PATHS.sfx.bet
+        ],
+
+        [
+            "betCancel",
+            AUDIO_PATHS.sfx.betCancel
+        ],
+
+        [
+            "countdown",
+            AUDIO_PATHS.sfx.countdown
+        ],
+
+        [
+            "takeoff",
+            AUDIO_PATHS.sfx.takeoff
+        ],
+
+        [
+            "cashout",
+            AUDIO_PATHS.sfx.cashout
+        ],
+
+        [
+            "autoCashout",
+            AUDIO_PATHS.sfx.autoCashout
+        ],
+
+        [
+            "crash",
+            AUDIO_PATHS.sfx.crash
+        ],
+
+        [
+            "win",
+            AUDIO_PATHS.sfx.win
+        ],
+
+        [
+            "insufficientBalance",
+            AUDIO_PATHS.sfx
+                .insufficientBalance
+        ]
+    ];
+
+
+    for (
+        const [
+            key,
+            src
+        ]
+        of oneShotSfx
+    ) {
+
+        runtime.sfx.set(
+            key,
+            createAudio(
+                src,
+                {
+                    loop: false,
+                    volume:
+                        AUDIO_CONFIG
+                            .sfxVolume
+                }
+            )
+        );
+    }
+
+
+    /* -----------------------------------------------------
+       Looped SFX
+    ----------------------------------------------------- */
+
+    runtime.sfx.set(
+        "flyingLoop",
+        createAudio(
+            AUDIO_PATHS.sfx
+                .flyingLoop,
+            {
+                loop: true,
+                volume:
+                    AUDIO_CONFIG
+                        .flyingLoopVolume
+            }
+        )
+    );
+
+
+    runtime.sfx.set(
+        "multiplierRise",
+        createAudio(
+            AUDIO_PATHS.sfx
+                .multiplierRise,
+            {
+                loop: true,
+                volume:
+                    AUDIO_CONFIG
+                        .multiplierRiseVolume
+            }
+        )
+    );
+
+
+    runtime.initialized =
+        true;
+
+
+    /* -----------------------------------------------------
+       Settings subscription
+    ----------------------------------------------------- */
+
+    runtime.settingsUnsubscribe =
+        subscribeToSettings(
+            handleSettingsChanged
+        );
 }
 
 
@@ -645,335 +398,552 @@ function stopAllSfx({
 ========================================================= */
 
 function preloadAudio() {
-    for (
-        const key
-        of Object.keys(
-            AUDIO_PATHS.bgm
-        )
-    ) {
-        getBgmAudio(key);
-    }
+
+    initializeAudio();
+
 
     for (
-        const key
-        of Object.keys(
-            AUDIO_PATHS.sfx
-        )
+        const audio
+        of runtime.bgm.values()
     ) {
-        getSfxAudio(key);
+
+        try {
+
+            audio.load();
+
+        } catch (error) {
+
+            /*
+             Ignore preload failures.
+            */
+        }
     }
+
+
+    for (
+        const audio
+        of runtime.sfx.values()
+    ) {
+
+        try {
+
+            audio.load();
+
+        } catch (error) {
+
+            /*
+             Ignore preload failures.
+            */
+        }
+    }
+
 
     return true;
 }
 
 
 /* =========================================================
-   MASTER VOLUME
+   SAFE PLAY
 ========================================================= */
 
-function setMasterVolume(value) {
-    audioState.masterVolume =
-        clampVolume(value);
+async function safePlay(
+    audio
+) {
 
-    refreshVolumes();
-
-    return (
-        audioState.masterVolume
-    );
-}
-
-
-function getMasterVolume() {
-    return (
-        audioState.masterVolume
-    );
-}
-
-
-/* =========================================================
-   BGM VOLUME
-========================================================= */
-
-function setBgmVolume(value) {
-    audioState.bgmVolume =
-        clampVolume(value);
-
-    refreshVolumes();
-
-    return (
-        audioState.bgmVolume
-    );
-}
-
-
-function getBgmVolume() {
-    return (
-        audioState.bgmVolume
-    );
-}
-
-
-/* =========================================================
-   SFX VOLUME
-========================================================= */
-
-function setSfxVolume(value) {
-    audioState.sfxVolume =
-        clampVolume(value);
-
-    refreshVolumes();
-
-    return (
-        audioState.sfxVolume
-    );
-}
-
-
-function getSfxVolume() {
-    return (
-        audioState.sfxVolume
-    );
-}
-
-
-/* =========================================================
-   REFRESH VOLUMES
-========================================================= */
-
-function refreshVolumes() {
-    if (
-        audioState.currentBgm
-    ) {
-        audioState.currentBgm.volume =
-            getEffectiveBgmVolume();
+    if (!audio) {
+        return false;
     }
+
+
+    try {
+
+        const promise =
+            audio.play();
+
+
+        if (
+            promise &&
+            typeof promise.then ===
+                "function"
+        ) {
+            await promise;
+        }
+
+
+        return true;
+
+    } catch (error) {
+
+        /*
+         Autoplay restrictions are normal browser behavior.
+         Do not treat them as fatal.
+        */
+
+        return false;
+    }
+}
+
+
+/* =========================================================
+   PLAY ONE-SHOT SFX
+
+   Clone the preloaded Audio node so rapid repeated effects
+   can overlap without cutting each other off.
+========================================================= */
+
+function playSfx(
+    key
+) {
+
+    initializeAudio();
+
+
+    const settings =
+        getSettings();
+
+
+    if (
+        !settings.soundEnabled
+    ) {
+        return false;
+    }
+
+
+    const template =
+        runtime.sfx.get(
+            key
+        );
+
+
+    if (!template) {
+        return false;
+    }
+
+
+    /*
+     Looped sounds must use the original instance and are
+     controlled separately.
+    */
+
+    if (
+        template.loop
+    ) {
+        return false;
+    }
+
+
+    const instance =
+        template.cloneNode(
+            true
+        );
+
+
+    instance.volume =
+        template.volume;
+
+
+    instance.currentTime =
+        0;
+
+
+    safePlay(
+        instance
+    );
+
+
+    return true;
+}
+
+
+/* =========================================================
+   START LOOP SFX
+========================================================= */
+
+function startLoopSfx(
+    key
+) {
+
+    initializeAudio();
+
+
+    const settings =
+        getSettings();
+
+
+    if (
+        !settings.soundEnabled
+    ) {
+        return false;
+    }
+
+
+    const audio =
+        runtime.sfx.get(
+            key
+        );
+
+
+    if (
+        !audio ||
+        !audio.loop
+    ) {
+        return false;
+    }
+
+
+    if (
+        !audio.paused
+    ) {
+
+        runtime.activeLoops.add(
+            key
+        );
+
+
+        return true;
+    }
+
+
+    safePlay(
+        audio
+    );
+
+
+    runtime.activeLoops.add(
+        key
+    );
+
+
+    return true;
+}
+
+
+/* =========================================================
+   STOP LOOP SFX
+========================================================= */
+
+function stopLoopSfx(
+    key,
+    {
+        reset = true
+    } = {}
+) {
+
+    initializeAudio();
+
+
+    const audio =
+        runtime.sfx.get(
+            key
+        );
+
+
+    if (!audio) {
+        return false;
+    }
+
+
+    audio.pause();
+
+
+    if (
+        reset
+    ) {
+        try {
+
+            audio.currentTime =
+                0;
+
+        } catch (error) {
+
+            /*
+             Ignore media seek errors.
+            */
+        }
+    }
+
+
+    runtime.activeLoops.delete(
+        key
+    );
+
+
+    return true;
+}
+
+
+/* =========================================================
+   STOP ALL LOOP SFX
+========================================================= */
+
+function stopAllLoopSfx() {
+
+    stopLoopSfx(
+        "flyingLoop"
+    );
+
+
+    stopLoopSfx(
+        "multiplierRise"
+    );
+}
+
+
+/* =========================================================
+   PLAY BGM
+========================================================= */
+
+function playBgm(
+    key
+) {
+
+    initializeAudio();
+
+
+    const settings =
+        getSettings();
+
+
+    if (
+        !settings.musicEnabled
+    ) {
+
+        pauseBgm();
+
+        return false;
+    }
+
+
+    const target =
+        runtime.bgm.get(
+            key
+        );
+
+
+    if (!target) {
+        return false;
+    }
+
+
+    /* -----------------------------------------------------
+       Same BGM already active
+    ----------------------------------------------------- */
+
+    if (
+        runtime.currentBgmKey ===
+            key &&
+        !target.paused
+    ) {
+        return true;
+    }
+
+
+    /* -----------------------------------------------------
+       Pause all other BGM
+    ----------------------------------------------------- */
 
     for (
-        const [key, audio]
-        of sfxCache.entries()
+        const [
+            otherKey,
+            audio
+        ]
+        of runtime.bgm
     ) {
-        audio.volume =
-            getEffectiveSfxVolume(
-                key
-            );
-    }
-}
-
-
-/* =========================================================
-   SETTINGS SYNCHRONIZATION
-========================================================= */
-
-subscribeToSettings(
-    ({
-        settings,
-        changedKeys
-    }) => {
-
-        /* -------------------------------------------------
-           Music disabled
-        -------------------------------------------------- */
 
         if (
-            changedKeys.includes(
-                "musicEnabled"
-            )
+            otherKey === key
         ) {
-            if (
-                !settings.musicEnabled
-            ) {
-                pauseBgm();
-            } else if (
-                audioState.currentBgmKey &&
-                audioState.userHasInteracted &&
-                !document.hidden
-            ) {
-                resumeBgm();
-            }
+            continue;
         }
 
 
-        /* -------------------------------------------------
-           Sound disabled
-        -------------------------------------------------- */
+        audio.pause();
 
-        if (
-            changedKeys.includes(
-                "soundEnabled"
-            ) &&
-            !settings.soundEnabled
-        ) {
-            stopAllSfx({
-                reset: false
-            });
+
+        try {
+
+            audio.currentTime =
+                0;
+
+        } catch (error) {
+
+            /*
+             Ignore seek errors.
+            */
         }
     }
-);
 
 
-/* =========================================================
-   USER INTERACTION TRACKING
-
-   Browsers commonly block media playback until the user has
-   interacted with the page.
-
-   We track the first trusted interaction so other modules can
-   decide when playback is likely to succeed.
-========================================================= */
-
-function markUserInteraction() {
-    audioState.userHasInteracted =
-        true;
-}
+    runtime.currentBgmKey =
+        key;
 
 
-const interactionEvents = [
-    "pointerdown",
-    "keydown",
-    "touchstart"
-];
-
-
-for (
-    const eventName
-    of interactionEvents
-) {
-    window.addEventListener(
-        eventName,
-        markUserInteraction,
-        {
-            once: true,
-            passive: true
-        }
+    safePlay(
+        target
     );
+
+
+    return true;
 }
 
 
 /* =========================================================
-   VISIBILITY HANDLING
+   PAUSE BGM
 ========================================================= */
 
-function handleVisibilityChange() {
-    if (document.hidden) {
+function pauseBgm() {
 
-        audioState
-            .bgmWasPlayingBeforeHidden =
-            Boolean(
-                audioState.currentBgm &&
-                !audioState.currentBgm.paused
+    initializeAudio();
+
+
+    for (
+        const audio
+        of runtime.bgm.values()
+    ) {
+
+        audio.pause();
+    }
+
+
+    return true;
+}
+
+
+/* =========================================================
+   STOP BGM
+========================================================= */
+
+function stopBgm() {
+
+    initializeAudio();
+
+
+    for (
+        const audio
+        of runtime.bgm.values()
+    ) {
+
+        audio.pause();
+
+
+        try {
+
+            audio.currentTime =
+                0;
+
+        } catch (error) {
+
+            /*
+             Ignore seek errors.
+            */
+        }
+    }
+
+
+    runtime.currentBgmKey =
+        null;
+
+
+    return true;
+}
+
+
+/* =========================================================
+   CURRENT BGM
+========================================================= */
+
+function getCurrentBgmKey() {
+
+    return runtime.currentBgmKey;
+}
+
+
+/* =========================================================
+   SETTINGS CHANGE
+========================================================= */
+
+function handleSettingsChanged({
+    settings,
+    changedKeys
+}) {
+
+    if (
+        changedKeys.includes(
+            "musicEnabled"
+        )
+    ) {
+
+        if (
+            !settings.musicEnabled
+        ) {
+
+            pauseBgm();
+
+        } else if (
+            runtime.currentBgmKey
+        ) {
+
+            playBgm(
+                runtime.currentBgmKey
             );
-
-        pauseBgm();
-
-        return;
+        }
     }
 
 
     if (
-        audioState
-            .bgmWasPlayingBeforeHidden &&
-        isMusicEnabled()
+        changedKeys.includes(
+            "soundEnabled"
+        ) &&
+        !settings.soundEnabled
     ) {
-        resumeBgm();
+
+        stopAllLoopSfx();
     }
-
-    audioState
-        .bgmWasPlayingBeforeHidden =
-        false;
-}
-
-
-document.addEventListener(
-    "visibilitychange",
-    handleVisibilityChange
-);
-
-
-/* =========================================================
-   PAGE HIDE
-========================================================= */
-
-window.addEventListener(
-    "pagehide",
-    () => {
-        pauseBgm();
-
-        stopAllSfx({
-            reset: false
-        });
-    }
-);
-
-
-/* =========================================================
-   AUDIO STATUS
-========================================================= */
-
-function getAudioStatus() {
-    return {
-        soundEnabled:
-            isSoundEnabled(),
-
-        musicEnabled:
-            isMusicEnabled(),
-
-        userHasInteracted:
-            audioState
-                .userHasInteracted,
-
-        currentBgmKey:
-            audioState
-                .currentBgmKey,
-
-        bgmPlaying:
-            Boolean(
-                audioState.currentBgm &&
-                !audioState
-                    .currentBgm
-                    .paused
-            ),
-
-        masterVolume:
-            audioState.masterVolume,
-
-        bgmVolume:
-            audioState.bgmVolume,
-
-        sfxVolume:
-            audioState.sfxVolume
-    };
 }
 
 
 /* =========================================================
-   SHORTCUT HELPERS
-
-   These make page/game modules easier to read.
+   COMMON UI SFX
 ========================================================= */
 
 function playClick() {
-    return playSfx("click");
+
+    return playSfx(
+        "click"
+    );
 }
 
 
 function playEnterRoom() {
-    return playSfx("enterRoom");
+
+    return playSfx(
+        "enterRoom"
+    );
 }
 
 
 function playLoginReward() {
+
     return playSfx(
         "loginReward"
     );
 }
 
 
+/* =========================================================
+   GAMEPLAY SFX
+========================================================= */
+
 function playBet() {
-    return playSfx("bet");
+
+    return playSfx(
+        "bet"
+    );
 }
 
 
 function playBetCancel() {
+
     return playSfx(
         "betCancel"
     );
@@ -981,6 +951,7 @@ function playBetCancel() {
 
 
 function playCountdown() {
+
     return playSfx(
         "countdown"
     );
@@ -988,6 +959,7 @@ function playCountdown() {
 
 
 function playTakeoff() {
+
     return playSfx(
         "takeoff"
     );
@@ -995,30 +967,39 @@ function playTakeoff() {
 
 
 function startFlyingLoop() {
-    return playSfx(
-        "flyingLoop",
-        {
-            restart: false
-        }
-    );
-}
 
-
-function stopFlyingLoop() {
-    return stopSfx(
+    return startLoopSfx(
         "flyingLoop"
     );
 }
 
 
-function playMultiplierRise() {
-    return playSfx(
+function stopFlyingLoop() {
+
+    return stopLoopSfx(
+        "flyingLoop"
+    );
+}
+
+
+function startMultiplierRise() {
+
+    return startLoopSfx(
+        "multiplierRise"
+    );
+}
+
+
+function stopMultiplierRise() {
+
+    return stopLoopSfx(
         "multiplierRise"
     );
 }
 
 
 function playCashout() {
+
     return playSfx(
         "cashout"
     );
@@ -1026,6 +1007,7 @@ function playCashout() {
 
 
 function playAutoCashout() {
+
     return playSfx(
         "autoCashout"
     );
@@ -1033,6 +1015,7 @@ function playAutoCashout() {
 
 
 function playCrash() {
+
     return playSfx(
         "crash"
     );
@@ -1040,6 +1023,7 @@ function playCrash() {
 
 
 function playWin() {
+
     return playSfx(
         "win"
     );
@@ -1047,9 +1031,75 @@ function playWin() {
 
 
 function playInsufficientBalance() {
+
     return playSfx(
         "insufficientBalance"
     );
+}
+
+
+/* =========================================================
+   FLIGHT AUDIO HELPERS
+========================================================= */
+
+function startFlightAudio() {
+
+    playTakeoff();
+
+    startFlyingLoop();
+
+    startMultiplierRise();
+}
+
+
+function stopFlightAudio() {
+
+    stopFlyingLoop();
+
+    stopMultiplierRise();
+}
+
+
+/* =========================================================
+   RESET AUDIO RUNTIME
+
+   Useful for page teardown / development.
+========================================================= */
+
+function resetAudioRuntime() {
+
+    stopBgm();
+
+    stopAllLoopSfx();
+
+
+    for (
+        const audio
+        of runtime.sfx.values()
+    ) {
+
+        if (
+            audio.loop
+        ) {
+            continue;
+        }
+
+
+        audio.pause();
+
+
+        try {
+
+            audio.currentTime =
+                0;
+
+        } catch (error) {
+
+            /*
+             Ignore seek errors.
+            */
+        }
+    }
 }
 
 
@@ -1059,43 +1109,46 @@ function playInsufficientBalance() {
 
 export {
     AUDIO_PATHS,
-    DEFAULT_VOLUMES,
+    AUDIO_CONFIG,
 
     preloadAudio,
 
     playBgm,
     pauseBgm,
-    resumeBgm,
     stopBgm,
+    getCurrentBgmKey,
 
     playSfx,
-    stopSfx,
-    stopAllSfx,
-
-    setMasterVolume,
-    getMasterVolume,
-
-    setBgmVolume,
-    getBgmVolume,
-
-    setSfxVolume,
-    getSfxVolume,
-
-    getAudioStatus,
+    startLoopSfx,
+    stopLoopSfx,
+    stopAllLoopSfx,
 
     playClick,
     playEnterRoom,
     playLoginReward,
+
     playBet,
     playBetCancel,
+
     playCountdown,
     playTakeoff,
+
     startFlyingLoop,
     stopFlyingLoop,
-    playMultiplierRise,
+
+    startMultiplierRise,
+    stopMultiplierRise,
+
     playCashout,
     playAutoCashout,
+
     playCrash,
     playWin,
-    playInsufficientBalance
+
+    playInsufficientBalance,
+
+    startFlightAudio,
+    stopFlightAudio,
+
+    resetAudioRuntime
 };
