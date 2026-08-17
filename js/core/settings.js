@@ -2,503 +2,269 @@
    CG FLIGHT
    js/core/settings.js
 
-   Persistent player settings layer.
+   Persistent player settings.
 
    Responsibilities:
-   - Read saved settings
-   - Update sound settings
-   - Update music settings
+   - Read persisted settings
+   - Enable / disable sound effects
+   - Enable / disable background music
    - Toggle settings
-   - Reset settings to defaults
-   - Notify same-page subscribers about changes
+   - Restore defaults
+   - Publish setting change events
 
-   Persistent storage is handled through storage.js.
+   IMPORTANT:
+   This module stores preferences only.
+
+   It does NOT:
+   - Play audio
+   - Pause audio directly
+   - Create Audio objects
+   - Control page DOM
+
+   audio.js and page controllers react to settings changes.
 ========================================================= */
+
 
 import {
     getData,
     updateData,
-    subscribeToStorageChanges
+    subscribeToStorage
 } from "./storage.js";
+
+import {
+    clone
+} from "./utils.js";
 
 
 /* =========================================================
-   DEFAULT SETTINGS
-
-   Keep this synchronized with storage.js defaults.
+   SETTINGS DEFAULTS
 ========================================================= */
 
 const DEFAULT_SETTINGS = Object.freeze({
-    soundEnabled: true,
-    musicEnabled: true
+
+    soundEnabled:
+        true,
+
+    musicEnabled:
+        true
 });
 
 
 /* =========================================================
-   SETTING KEYS
+   SETTINGS KEYS
 ========================================================= */
 
-const SETTING_KEYS = Object.freeze({
-    SOUND_ENABLED: "soundEnabled",
-    MUSIC_ENABLED: "musicEnabled"
+const SETTINGS_KEYS = Object.freeze({
+
+    SOUND_ENABLED:
+        "soundEnabled",
+
+    MUSIC_ENABLED:
+        "musicEnabled"
 });
 
 
 /* =========================================================
-   LOCAL SUBSCRIBERS
-
-   Native localStorage "storage" events do not fire in the
-   same browser tab that performed the write.
-
-   Therefore settings.js maintains its own same-page
-   subscriber system.
+   SETTINGS LISTENERS
 ========================================================= */
 
-const settingsListeners = new Set();
+const settingsListeners =
+    new Set();
 
 
 /* =========================================================
-   TYPE HELPERS
+   LAST KNOWN SETTINGS
+
+   Used to prevent duplicate notifications and to detect
+   changes originating from storage events / other tabs.
 ========================================================= */
 
-function isPlainObject(value) {
-    return (
-        value !== null &&
-        typeof value === "object" &&
-        !Array.isArray(value)
-    );
-}
-
-
-function isBoolean(value) {
-    return typeof value === "boolean";
-}
+let lastKnownSettings =
+    null;
 
 
 /* =========================================================
-   SANITIZE SETTINGS
-
-   storage.js already sanitizes these values, but this module
-   still validates them defensively.
+   NORMALIZE SETTINGS
 ========================================================= */
 
-function sanitizeSettings(settings) {
+function normalizeSettings(
+    settings
+) {
     const source =
-        isPlainObject(settings)
+        settings &&
+        typeof settings === "object"
             ? settings
             : {};
 
+
     return {
+
         soundEnabled:
-            isBoolean(source.soundEnabled)
+            typeof source.soundEnabled ===
+                "boolean"
                 ? source.soundEnabled
-                : DEFAULT_SETTINGS.soundEnabled,
+                : DEFAULT_SETTINGS
+                    .soundEnabled,
 
         musicEnabled:
-            isBoolean(source.musicEnabled)
+            typeof source.musicEnabled ===
+                "boolean"
                 ? source.musicEnabled
-                : DEFAULT_SETTINGS.musicEnabled
+                : DEFAULT_SETTINGS
+                    .musicEnabled
     };
 }
 
 
 /* =========================================================
-   CLONE SETTINGS
-========================================================= */
-
-function cloneSettings(settings) {
-    return {
-        soundEnabled:
-            settings.soundEnabled,
-
-        musicEnabled:
-            settings.musicEnabled
-    };
-}
-
-
-/* =========================================================
-   GET ALL SETTINGS
+   GET SETTINGS
 ========================================================= */
 
 function getSettings() {
-    const data = getData();
 
-    return sanitizeSettings(
-        data.settings
+    const data =
+        getData();
+
+
+    const settings =
+        normalizeSettings(
+            data.settings
+        );
+
+
+    lastKnownSettings =
+        clone(
+            settings
+        );
+
+
+    return clone(
+        settings
     );
 }
 
 
 /* =========================================================
-   GET SINGLE SETTING
-========================================================= */
-
-function getSetting(key) {
-    const settings = getSettings();
-
-    if (
-        !Object.prototype.hasOwnProperty.call(
-            settings,
-            key
-        )
-    ) {
-        return undefined;
-    }
-
-    return settings[key];
-}
-
-
-/* =========================================================
-   SOUND
+   GET INDIVIDUAL VALUES
 ========================================================= */
 
 function isSoundEnabled() {
-    return getSettings().soundEnabled;
+
+    return getSettings()
+        .soundEnabled;
 }
 
-
-function setSoundEnabled(enabled) {
-    if (!isBoolean(enabled)) {
-        return {
-            success: false,
-            reason: "INVALID_VALUE"
-        };
-    }
-
-    return updateSettings({
-        soundEnabled: enabled
-    });
-}
-
-
-function toggleSoundEnabled() {
-    const current =
-        isSoundEnabled();
-
-    return setSoundEnabled(
-        !current
-    );
-}
-
-
-/* =========================================================
-   MUSIC
-========================================================= */
 
 function isMusicEnabled() {
-    return getSettings().musicEnabled;
-}
 
-
-function setMusicEnabled(enabled) {
-    if (!isBoolean(enabled)) {
-        return {
-            success: false,
-            reason: "INVALID_VALUE"
-        };
-    }
-
-    return updateSettings({
-        musicEnabled: enabled
-    });
-}
-
-
-function toggleMusicEnabled() {
-    const current =
-        isMusicEnabled();
-
-    return setMusicEnabled(
-        !current
-    );
+    return getSettings()
+        .musicEnabled;
 }
 
 
 /* =========================================================
-   UPDATE SETTINGS
-
-   Supports partial updates.
-
-   Example:
-
-   updateSettings({
-       soundEnabled: false
-   });
-
-   Or:
-
-   updateSettings({
-       soundEnabled: true,
-       musicEnabled: false
-   });
+   COMPARE SETTINGS
 ========================================================= */
 
-function updateSettings(partialSettings) {
-    if (!isPlainObject(partialSettings)) {
-        return {
-            success: false,
-            reason: "INVALID_SETTINGS"
-        };
-    }
+function getChangedKeys(
+    previous,
+    current
+) {
+    const changedKeys =
+        [];
 
-    const allowedKeys = [
-        SETTING_KEYS.SOUND_ENABLED,
-        SETTING_KEYS.MUSIC_ENABLED
-    ];
-
-    const requestedChanges = {};
-
-    for (const key of allowedKeys) {
-        if (
-            !Object.prototype.hasOwnProperty.call(
-                partialSettings,
-                key
-            )
-        ) {
-            continue;
-        }
-
-        const value =
-            partialSettings[key];
-
-        if (!isBoolean(value)) {
-            return {
-                success: false,
-                reason: "INVALID_VALUE",
-                key
-            };
-        }
-
-        requestedChanges[key] = value;
-    }
-
-    const changeKeys =
-        Object.keys(
-            requestedChanges
-        );
-
-    if (changeKeys.length === 0) {
-        return {
-            success: false,
-            reason: "NO_CHANGES"
-        };
-    }
-
-    let result = null;
-
-    const savedData =
-        updateData((data) => {
-            const currentSettings =
-                sanitizeSettings(
-                    data.settings
-                );
-
-            const previous =
-                cloneSettings(
-                    currentSettings
-                );
-
-            const next = {
-                ...currentSettings,
-                ...requestedChanges
-            };
-
-            data.settings = next;
-
-            const changedKeys =
-                changeKeys.filter(
-                    (key) =>
-                        previous[key] !==
-                        next[key]
-                );
-
-            result = {
-                success: true,
-
-                changed:
-                    changedKeys.length > 0,
-
-                changedKeys,
-
-                previous:
-                    cloneSettings(
-                        previous
-                    ),
-
-                settings:
-                    cloneSettings(
-                        next
-                    )
-            };
-        });
-
-    if (!savedData) {
-        return {
-            success: false,
-            reason: "STORAGE_WRITE_FAILED"
-        };
-    }
 
     if (
-        result &&
-        result.changed
+        previous.soundEnabled !==
+        current.soundEnabled
     ) {
-        notifySettingsListeners(
-            result.settings,
-            result.previous,
-            result.changedKeys
+        changedKeys.push(
+            SETTINGS_KEYS
+                .SOUND_ENABLED
         );
     }
 
-    return result;
+
+    if (
+        previous.musicEnabled !==
+        current.musicEnabled
+    ) {
+        changedKeys.push(
+            SETTINGS_KEYS
+                .MUSIC_ENABLED
+        );
+    }
+
+
+    return changedKeys;
 }
 
 
 /* =========================================================
-   RESET SETTINGS
+   NOTIFY LISTENERS
 
-   Restores current settings to defaults.
-========================================================= */
-
-function resetSettings() {
-    const current =
-        getSettings();
-
-    const next = {
-        ...DEFAULT_SETTINGS
-    };
-
-    let result = null;
-
-    const savedData =
-        updateData((data) => {
-            data.settings = {
-                ...next
-            };
-
-            const changedKeys =
-                Object.keys(next)
-                    .filter(
-                        (key) =>
-                            current[key] !==
-                            next[key]
-                    );
-
-            result = {
-                success: true,
-
-                changed:
-                    changedKeys.length > 0,
-
-                changedKeys,
-
-                previous:
-                    cloneSettings(
-                        current
-                    ),
-
-                settings:
-                    cloneSettings(
-                        next
-                    )
-            };
-        });
-
-    if (!savedData) {
-        return {
-            success: false,
-            reason: "STORAGE_WRITE_FAILED"
-        };
-    }
-
-    if (
-        result &&
-        result.changed
-    ) {
-        notifySettingsListeners(
-            result.settings,
-            result.previous,
-            result.changedKeys
-        );
-    }
-
-    return result;
-}
-
-
-/* =========================================================
-   SUBSCRIBE
-
-   Listener receives:
+   Subscriber payload:
 
    {
        settings,
-       previous,
+       previousSettings,
        changedKeys,
-       source
+       source,
+       timestamp
    }
 ========================================================= */
 
-function subscribeToSettings(
-    listener
-) {
-    if (
-        typeof listener !==
-        "function"
-    ) {
-        throw new TypeError(
-            "[CG Flight] Settings listener must be a function."
-        );
-    }
-
-    settingsListeners.add(
-        listener
-    );
-
-    return function unsubscribe() {
-        settingsListeners.delete(
-            listener
-        );
-    };
-}
-
-
-/* =========================================================
-   NOTIFY LOCAL LISTENERS
-========================================================= */
-
-function notifySettingsListeners(
+function notifySettingsListeners({
     settings,
-    previous,
+    previousSettings,
     changedKeys,
     source = "LOCAL"
-) {
+}) {
+
+    if (
+        !Array.isArray(
+            changedKeys
+        ) ||
+        changedKeys.length === 0
+    ) {
+        return;
+    }
+
+
     const payload = {
+
         settings:
-            cloneSettings(
+            clone(
                 settings
             ),
 
-        previous:
-            cloneSettings(
-                previous
+        previousSettings:
+            clone(
+                previousSettings
             ),
 
         changedKeys:
             [...changedKeys],
 
-        source
+        source,
+
+        timestamp:
+            Date.now()
     };
+
 
     for (
         const listener
         of settingsListeners
     ) {
         try {
-            listener(payload);
+
+            listener(
+                payload
+            );
+
         } catch (error) {
+
             console.error(
                 "[CG Flight] Settings listener failed:",
                 error
@@ -509,41 +275,513 @@ function notifySettingsListeners(
 
 
 /* =========================================================
-   CROSS-TAB SYNCHRONIZATION
-
-   storage.js watches localStorage changes from other tabs.
-
-   When another CG Flight tab changes settings, update local
-   subscribers as well.
+   SUBSCRIBE
 ========================================================= */
 
-let lastKnownSettings =
-    getSettings();
+function subscribeToSettings(
+    listener
+) {
+
+    if (
+        typeof listener !==
+        "function"
+    ) {
+        throw new TypeError(
+            "[CG Flight] Settings listener must be a function."
+        );
+    }
 
 
-subscribeToStorageChanges(
-    (data) => {
-        const nextSettings =
-            sanitizeSettings(
-                data.settings
+    settingsListeners.add(
+        listener
+    );
+
+
+    /*
+     Make sure comparison state exists before any future
+     Storage notification arrives.
+    */
+
+    if (
+        lastKnownSettings ===
+        null
+    ) {
+        lastKnownSettings =
+            getSettings();
+    }
+
+
+    return function unsubscribe() {
+
+        settingsListeners.delete(
+            listener
+        );
+    };
+}
+
+
+/* =========================================================
+   SET SETTINGS
+
+   Supports partial updates:
+
+   setSettings({
+       soundEnabled: false
+   });
+
+   Unknown fields are ignored.
+========================================================= */
+
+function setSettings(
+    updates
+) {
+
+    if (
+        !updates ||
+        typeof updates !==
+            "object"
+    ) {
+        return {
+            success: false,
+
+            reason:
+                "INVALID_SETTINGS"
+        };
+    }
+
+
+    const previousSettings =
+        getSettings();
+
+
+    const nextSettings = {
+        ...previousSettings
+    };
+
+
+    let hasRecognizedField =
+        false;
+
+
+    /* -----------------------------------------------------
+       Sound
+    ----------------------------------------------------- */
+
+    if (
+        Object.prototype
+            .hasOwnProperty
+            .call(
+                updates,
+                SETTINGS_KEYS
+                    .SOUND_ENABLED
+            )
+    ) {
+
+        if (
+            typeof updates.soundEnabled !==
+            "boolean"
+        ) {
+            return {
+                success: false,
+
+                reason:
+                    "INVALID_SOUND_SETTING"
+            };
+        }
+
+
+        nextSettings.soundEnabled =
+            updates.soundEnabled;
+
+
+        hasRecognizedField =
+            true;
+    }
+
+
+    /* -----------------------------------------------------
+       Music
+    ----------------------------------------------------- */
+
+    if (
+        Object.prototype
+            .hasOwnProperty
+            .call(
+                updates,
+                SETTINGS_KEYS
+                    .MUSIC_ENABLED
+            )
+    ) {
+
+        if (
+            typeof updates.musicEnabled !==
+            "boolean"
+        ) {
+            return {
+                success: false,
+
+                reason:
+                    "INVALID_MUSIC_SETTING"
+            };
+        }
+
+
+        nextSettings.musicEnabled =
+            updates.musicEnabled;
+
+
+        hasRecognizedField =
+            true;
+    }
+
+
+    if (
+        !hasRecognizedField
+    ) {
+        return {
+            success: false,
+
+            reason:
+                "NO_RECOGNIZED_SETTINGS"
+        };
+    }
+
+
+    const changedKeys =
+        getChangedKeys(
+            previousSettings,
+            nextSettings
+        );
+
+
+    /*
+     Setting the same value again is valid but does not
+     require a Local Storage write or notification.
+    */
+
+    if (
+        changedKeys.length === 0
+    ) {
+
+        return {
+            success: true,
+
+            changed:
+                false,
+
+            settings:
+                clone(
+                    previousSettings
+                ),
+
+            changedKeys:
+                []
+        };
+    }
+
+
+    const saved =
+        updateData(
+            (data) => {
+
+                data.settings =
+                    normalizeSettings({
+                        ...data.settings,
+                        ...nextSettings
+                    });
+            }
+        );
+
+
+    if (!saved) {
+
+        return {
+            success: false,
+
+            reason:
+                "STORAGE_WRITE_FAILED"
+        };
+    }
+
+
+    const currentSettings =
+        normalizeSettings(
+            saved.settings
+        );
+
+
+    lastKnownSettings =
+        clone(
+            currentSettings
+        );
+
+
+    notifySettingsListeners({
+
+        settings:
+            currentSettings,
+
+        previousSettings,
+
+        changedKeys,
+
+        source:
+            "LOCAL"
+    });
+
+
+    return {
+
+        success: true,
+
+        changed:
+            true,
+
+        settings:
+            clone(
+                currentSettings
+            ),
+
+        changedKeys:
+            [...changedKeys]
+    };
+}
+
+
+/* =========================================================
+   SET SOUND ENABLED
+========================================================= */
+
+function setSoundEnabled(
+    enabled
+) {
+
+    if (
+        typeof enabled !==
+        "boolean"
+    ) {
+        return {
+            success: false,
+
+            reason:
+                "INVALID_SOUND_SETTING"
+        };
+    }
+
+
+    return setSettings({
+        soundEnabled:
+            enabled
+    });
+}
+
+
+/* =========================================================
+   SET MUSIC ENABLED
+========================================================= */
+
+function setMusicEnabled(
+    enabled
+) {
+
+    if (
+        typeof enabled !==
+        "boolean"
+    ) {
+        return {
+            success: false,
+
+            reason:
+                "INVALID_MUSIC_SETTING"
+        };
+    }
+
+
+    return setSettings({
+        musicEnabled:
+            enabled
+    });
+}
+
+
+/* =========================================================
+   TOGGLE SOUND
+========================================================= */
+
+function toggleSoundEnabled() {
+
+    const settings =
+        getSettings();
+
+
+    return setSoundEnabled(
+        !settings.soundEnabled
+    );
+}
+
+
+/* =========================================================
+   TOGGLE MUSIC
+========================================================= */
+
+function toggleMusicEnabled() {
+
+    const settings =
+        getSettings();
+
+
+    return setMusicEnabled(
+        !settings.musicEnabled
+    );
+}
+
+
+/* =========================================================
+   RESET SETTINGS
+========================================================= */
+
+function resetSettings() {
+
+    const previousSettings =
+        getSettings();
+
+
+    const changedKeys =
+        getChangedKeys(
+            previousSettings,
+            DEFAULT_SETTINGS
+        );
+
+
+    const saved =
+        updateData(
+            (data) => {
+
+                data.settings = {
+
+                    soundEnabled:
+                        DEFAULT_SETTINGS
+                            .soundEnabled,
+
+                    musicEnabled:
+                        DEFAULT_SETTINGS
+                            .musicEnabled
+                };
+            }
+        );
+
+
+    if (!saved) {
+
+        return {
+            success: false,
+
+            reason:
+                "STORAGE_WRITE_FAILED"
+        };
+    }
+
+
+    const currentSettings =
+        normalizeSettings(
+            saved.settings
+        );
+
+
+    lastKnownSettings =
+        clone(
+            currentSettings
+        );
+
+
+    if (
+        changedKeys.length > 0
+    ) {
+
+        notifySettingsListeners({
+
+            settings:
+                currentSettings,
+
+            previousSettings,
+
+            changedKeys,
+
+            source:
+                "RESET"
+        });
+    }
+
+
+    return {
+
+        success: true,
+
+        changed:
+            changedKeys.length > 0,
+
+        settings:
+            clone(
+                currentSettings
+            ),
+
+        changedKeys:
+            [...changedKeys]
+    };
+}
+
+
+/* =========================================================
+   STORAGE SYNCHRONIZATION
+
+   Handles changes from:
+   - another browser tab
+   - direct storage import/reset
+   - other modules replacing root settings
+
+   Local setSettings() also triggers storage listeners.
+   Duplicate events are prevented by comparing the latest
+   known values.
+========================================================= */
+
+subscribeToStorage(
+    ({
+        current
+    }) => {
+
+        const currentSettings =
+            normalizeSettings(
+                current?.settings
             );
 
-        const previous =
-            lastKnownSettings;
+
+        if (
+            lastKnownSettings ===
+            null
+        ) {
+
+            lastKnownSettings =
+                clone(
+                    currentSettings
+                );
+
+
+            return;
+        }
+
+
+        const previousSettings =
+            clone(
+                lastKnownSettings
+            );
+
 
         const changedKeys =
-            Object.keys(
-                DEFAULT_SETTINGS
-            ).filter(
-                (key) =>
-                    previous[key] !==
-                    nextSettings[key]
+            getChangedKeys(
+                previousSettings,
+                currentSettings
             );
 
-        lastKnownSettings =
-            cloneSettings(
-                nextSettings
-            );
 
         if (
             changedKeys.length === 0
@@ -551,50 +789,27 @@ subscribeToStorageChanges(
             return;
         }
 
-        notifySettingsListeners(
-            nextSettings,
-            previous,
-            changedKeys,
-            "EXTERNAL"
-        );
-    }
-);
 
-
-/* =========================================================
-   UPDATE LAST KNOWN SETTINGS AFTER SAME-TAB CHANGES
-
-   Keep the cross-tab comparison baseline synchronized.
-========================================================= */
-
-subscribeToSettings(
-    ({ settings }) => {
         lastKnownSettings =
-            cloneSettings(
-                settings
+            clone(
+                currentSettings
             );
+
+
+        notifySettingsListeners({
+
+            settings:
+                currentSettings,
+
+            previousSettings,
+
+            changedKeys,
+
+            source:
+                "STORAGE"
+        });
     }
 );
-
-
-/* =========================================================
-   SETTINGS SUMMARY
-
-   Useful for UI initialization.
-========================================================= */
-
-function getSettingsSummary() {
-    const settings =
-        getSettings();
-
-    return {
-        soundEnabled:
-            settings.soundEnabled,
-
-        musicEnabled:
-            settings.musicEnabled
-    };
-}
 
 
 /* =========================================================
@@ -603,21 +818,21 @@ function getSettingsSummary() {
 
 export {
     DEFAULT_SETTINGS,
-    SETTING_KEYS,
+    SETTINGS_KEYS,
 
     getSettings,
-    getSetting,
-    getSettingsSummary,
 
     isSoundEnabled,
-    setSoundEnabled,
-    toggleSoundEnabled,
-
     isMusicEnabled,
+
+    setSettings,
+
+    setSoundEnabled,
     setMusicEnabled,
+
+    toggleSoundEnabled,
     toggleMusicEnabled,
 
-    updateSettings,
     resetSettings,
 
     subscribeToSettings
