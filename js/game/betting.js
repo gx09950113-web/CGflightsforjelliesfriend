@@ -2,48 +2,48 @@
    CG FLIGHT
    js/game/betting.js
 
-   Betting domain layer.
+   Betting lifecycle controller.
 
    Responsibilities:
    - Validate bet amount
-   - Deduct wallet balance when placing a bet
-   - Store bet state in state.js
-   - Cancel/refund bets before flight starts
-   - Activate placed bet when flight begins
-   - Expose bet status helpers
+   - Preview bet validity
+   - Place bet during BETTING phase
+   - Debit wallet immediately
+   - Cancel bet before flight starts
+   - Refund cancelled bet
+   - Expose betting status
 
    IMPORTANT:
-   This module does NOT:
-   - Perform cashout
-   - Mark bet loss
-   - Perform settlement
-   - Write round history
+   betting.js does NOT:
+   - Start countdown
+   - Start flight
+   - Perform Cash Out
+   - Perform Settlement
 ========================================================= */
+
 
 import {
     GAME_PHASES,
     BET_STATUS,
 
-    getPhase,
-    getBet,
+    getState,
 
-    setBet,
-    activateBet,
-    markBetCancelled
+    setBetPlaced,
+    setBetCancelled
 } from "./state.js";
+
 
 import {
     getBalance,
-    canAfford,
-    debit,
-    credit,
-    WALLET_TRANSACTION_TYPES
+    debitBet,
+    refundBet
 } from "../core/wallet.js";
 
+
 import {
-    roundTo,
-    isFiniteNumber
+    roundTo
 } from "../core/utils.js";
+
 
 import {
     playBet,
@@ -53,28 +53,114 @@ import {
 
 
 /* =========================================================
-   BETTING CONFIG
+   BET CONFIG
 ========================================================= */
 
-const BETTING_CONFIG = Object.freeze({
+const BET_CONFIG = Object.freeze({
 
-    /*
-     Minimum allowed bet.
-    */
-    MIN_BET: 1,
+    MIN_BET:
+        1,
 
-    /*
-     Maximum allowed bet.
+    MAX_BET:
+        1000000,
 
-     This is a gameplay cap, not the wallet balance cap.
-    */
-    MAX_BET: 1000000,
-
-    /*
-     Bet precision.
-    */
-    DECIMALS: 2
+    DECIMALS:
+        2
 });
+
+
+/* =========================================================
+   BETTING EVENT TYPES
+========================================================= */
+
+const BETTING_EVENT_TYPES =
+    Object.freeze({
+
+        BET_PLACED:
+            "BET_PLACED",
+
+        BET_CANCELLED:
+            "BET_CANCELLED",
+
+        BET_REJECTED:
+            "BET_REJECTED"
+    });
+
+
+/* =========================================================
+   LISTENERS
+========================================================= */
+
+const bettingListeners =
+    new Set();
+
+
+function subscribeToBetting(
+    listener
+) {
+
+    if (
+        typeof listener !==
+        "function"
+    ) {
+        throw new TypeError(
+            "[CG Flight] Betting listener must be a function."
+        );
+    }
+
+
+    bettingListeners.add(
+        listener
+    );
+
+
+    return function unsubscribe() {
+
+        bettingListeners.delete(
+            listener
+        );
+    };
+}
+
+
+/* =========================================================
+   NOTIFY
+========================================================= */
+
+function notifyBettingListeners(
+    event
+) {
+
+    const payload = {
+
+        ...event,
+
+        timestamp:
+            event.timestamp ??
+            Date.now()
+    };
+
+
+    for (
+        const listener
+        of bettingListeners
+    ) {
+
+        try {
+
+            listener(
+                payload
+            );
+
+        } catch (error) {
+
+            console.error(
+                "[CG Flight] Betting listener failed:",
+                error
+            );
+        }
+    }
+}
 
 
 /* =========================================================
@@ -84,109 +170,94 @@ const BETTING_CONFIG = Object.freeze({
 function normalizeBetAmount(
     amount
 ) {
+
     const numeric =
         Number(amount);
 
+
     if (
-        !isFiniteNumber(
+        !Number.isFinite(
             numeric
         )
     ) {
         return null;
     }
 
+
     const normalized =
         roundTo(
             numeric,
-            BETTING_CONFIG.DECIMALS
+            BET_CONFIG.DECIMALS
         );
+
 
     if (
         normalized <
-            BETTING_CONFIG.MIN_BET ||
+            BET_CONFIG.MIN_BET ||
         normalized >
-            BETTING_CONFIG.MAX_BET
+            BET_CONFIG.MAX_BET
     ) {
         return null;
     }
+
 
     return normalized;
 }
 
 
 /* =========================================================
-   VALIDATE BET
+   PREVIEW BET
 ========================================================= */
 
-function validateBet(
+function previewBet(
     amount
 ) {
+
     const normalized =
         normalizeBetAmount(
             amount
         );
 
-    if (normalized === null) {
+
+    const state =
+        getState();
+
+
+    const balance =
+        getBalance();
+
+
+    if (
+        normalized ===
+        null
+    ) {
+
         return {
             valid: false,
+
             reason:
-                "INVALID_BET_AMOUNT"
+                "INVALID_AMOUNT",
+
+            amount:
+                null,
+
+            balance
         };
     }
 
 
-    const phase =
-        getPhase();
-
     if (
-        phase !==
+        state.phase !==
         GAME_PHASES.BETTING
     ) {
+
         return {
             valid: false,
 
             reason:
                 "BETTING_CLOSED",
 
-            phase
-        };
-    }
-
-
-    const currentBet =
-        getBet();
-
-    if (
-        currentBet.status !==
-        BET_STATUS.NONE
-    ) {
-        return {
-            valid: false,
-
-            reason:
-                "BET_ALREADY_EXISTS",
-
-            bet:
-                currentBet
-        };
-    }
-
-
-    const balance =
-        getBalance();
-
-    if (
-        !canAfford(
-            normalized
-        )
-    ) {
-        return {
-            valid: false,
-
-            reason:
-                "INSUFFICIENT_BALANCE",
-
-            requestedAmount:
+            amount:
                 normalized,
 
             balance
@@ -194,79 +265,172 @@ function validateBet(
     }
 
 
+    if (
+        state.bet.status !==
+        BET_STATUS.NONE
+    ) {
+
+        return {
+            valid: false,
+
+            reason:
+                "BET_ALREADY_EXISTS",
+
+            amount:
+                normalized,
+
+            balance
+        };
+    }
+
+
+    if (
+        balance <
+        normalized
+    ) {
+
+        return {
+            valid: false,
+
+            reason:
+                "INSUFFICIENT_BALANCE",
+
+            amount:
+                normalized,
+
+            balance,
+
+            shortage:
+                roundTo(
+                    normalized -
+                    balance,
+                    2
+                )
+        };
+    }
+
+
     return {
         valid: true,
+
+        reason:
+            null,
 
         amount:
             normalized,
 
-        balance
+        balance,
+
+        balanceAfterBet:
+            roundTo(
+                balance -
+                normalized,
+                2
+            )
     };
 }
 
 
 /* =========================================================
    PLACE BET
-
-   Flow:
-   1. Validate phase / amount / existing bet
-   2. Debit wallet
-   3. Store bet in round state
-   4. If state write somehow fails, refund wallet
 ========================================================= */
 
 function placeBet(
     amount
 ) {
-    const validation =
-        validateBet(
+
+    const preview =
+        previewBet(
             amount
         );
 
 
-    if (!validation.valid) {
+    if (
+        !preview.valid
+    ) {
+
         if (
-            validation.reason ===
+            preview.reason ===
             "INSUFFICIENT_BALANCE"
         ) {
             playInsufficientBalance();
         }
 
+
+        notifyBettingListeners({
+
+            type:
+                BETTING_EVENT_TYPES
+                    .BET_REJECTED,
+
+            reason:
+                preview.reason,
+
+            amount:
+                preview.amount,
+
+            balance:
+                preview.balance
+        });
+
+
         return {
             success: false,
-            ...validation
+
+            reason:
+                preview.reason,
+
+            amount:
+                preview.amount,
+
+            balance:
+                preview.balance,
+
+            shortage:
+                preview.shortage ??
+                0
         };
     }
 
 
-    const normalizedAmount =
-        validation.amount;
+    const state =
+        getState();
+
+
+    const roundId =
+        state.roundId;
+
+
+    if (!roundId) {
+
+        return {
+            success: false,
+
+            reason:
+                "NO_ACTIVE_ROUND"
+        };
+    }
 
 
     /* -----------------------------------------------------
-       Wallet debit
+       Debit Wallet first.
+
+       If debit fails, State must remain untouched.
     ----------------------------------------------------- */
 
     const debitResult =
-        debit(
-            normalizedAmount,
+        debitBet(
+            preview.amount,
             {
-                type:
-                    WALLET_TRANSACTION_TYPES
-                        .BET,
-
-                metadata: {
-                    source:
-                        "BET",
-
-                    phase:
-                        getPhase()
-                }
+                roundId
             }
         );
 
 
-    if (!debitResult.success) {
+    if (
+        !debitResult.success
+    ) {
+
         if (
             debitResult.reason ===
             "INSUFFICIENT_BALANCE"
@@ -274,11 +438,32 @@ function placeBet(
             playInsufficientBalance();
         }
 
+
+        notifyBettingListeners({
+
+            type:
+                BETTING_EVENT_TYPES
+                    .BET_REJECTED,
+
+            reason:
+                debitResult.reason,
+
+            amount:
+                preview.amount,
+
+            balance:
+                debitResult.balance
+        });
+
+
         return {
             success: false,
 
             reason:
                 debitResult.reason,
+
+            amount:
+                preview.amount,
 
             balance:
                 debitResult.balance
@@ -287,47 +472,43 @@ function placeBet(
 
 
     /* -----------------------------------------------------
-       Store state
+       Persist Bet into current round State.
     ----------------------------------------------------- */
 
-    const stateResult =
-        setBet({
+    const placedAt =
+        new Date()
+            .toISOString();
+
+
+    const updated =
+        setBetPlaced({
+
             amount:
-                normalizedAmount,
+                preview.amount,
 
             transactionId:
                 debitResult
-                    .transaction
-                    .id
+                    .transactionId,
+
+            placedAt
         });
 
 
-    /* -----------------------------------------------------
-       Rollback if state update failed
-    ----------------------------------------------------- */
+    if (!updated) {
 
-    if (!stateResult.success) {
-        const refundResult =
-            credit(
-                normalizedAmount,
+        /*
+         State update failed after wallet debit.
+
+         Refund immediately to avoid money loss.
+        */
+
+        const rollback =
+            refundBet(
+                preview.amount,
                 {
-                    type:
-                        WALLET_TRANSACTION_TYPES
-                            .BET_REFUND,
-
-                    metadata: {
-                        source:
-                            "BET_ROLLBACK",
-
-                        originalTransactionId:
-                            debitResult
-                                .transaction
-                                .id,
-
-                        reason:
-                            stateResult
-                                .reason
-                    }
+                    roundId,
+                    reason:
+                        "BET_STATE_ROLLBACK"
                 }
             );
 
@@ -336,13 +517,10 @@ function placeBet(
             success: false,
 
             reason:
-                "BET_STATE_WRITE_FAILED",
-
-            stateReason:
-                stateResult.reason,
+                "BET_STATE_UPDATE_FAILED",
 
             rollbackSuccess:
-                refundResult.success
+                rollback.success
         };
     }
 
@@ -350,27 +528,44 @@ function placeBet(
     playBet();
 
 
+    notifyBettingListeners({
+
+        type:
+            BETTING_EVENT_TYPES
+                .BET_PLACED,
+
+        roundId,
+
+        amount:
+            preview.amount,
+
+        transactionId:
+            debitResult
+                .transactionId,
+
+        balance:
+            debitResult.balance,
+
+        placedAt
+    });
+
+
     return {
         success: true,
 
+        roundId,
+
         amount:
-            normalizedAmount,
+            preview.amount,
 
-        balanceBefore:
+        transactionId:
             debitResult
-                .balanceBefore,
+                .transactionId,
 
-        balanceAfter:
-            debitResult
-                .balanceAfter,
+        balance:
+            debitResult.balance,
 
-        transaction:
-            debitResult
-                .transaction,
-
-        bet:
-            stateResult
-                .bet
+        placedAt
     };
 }
 
@@ -378,131 +573,179 @@ function placeBet(
 /* =========================================================
    CAN CANCEL BET
 
-   Current rule:
-   A placed bet can be cancelled while the round is still in
-   BETTING or COUNTDOWN phase, but not once it is ACTIVE.
+   Cancellation is allowed only while:
+   - status is PLACED
+   - phase is BETTING or COUNTDOWN
+
+   Once FLYING starts, state.js changes PLACED -> ACTIVE.
 ========================================================= */
 
 function canCancelBet() {
-    const phase =
-        getPhase();
 
-    const bet =
-        getBet();
-
-
-    if (
-        bet.status !==
-        BET_STATUS.PLACED
-    ) {
-        return false;
-    }
+    const state =
+        getState();
 
 
     return (
-        phase ===
-            GAME_PHASES.BETTING ||
-        phase ===
-            GAME_PHASES.COUNTDOWN
+        state.bet.status ===
+            BET_STATUS.PLACED &&
+        (
+            state.phase ===
+                GAME_PHASES.BETTING ||
+            state.phase ===
+                GAME_PHASES.COUNTDOWN
+        )
     );
 }
 
 
 /* =========================================================
    CANCEL BET
-
-   Flow:
-   1. Check cancellability
-   2. Refund wallet
-   3. Mark bet as cancelled in state
 ========================================================= */
 
 function cancelBet() {
-    if (!canCancelBet()) {
+
+    const state =
+        getState();
+
+
+    if (
+        !state.roundId
+    ) {
+
         return {
             success: false,
 
             reason:
-                "BET_NOT_CANCELLABLE",
-
-            phase:
-                getPhase(),
-
-            bet:
-                getBet()
+                "NO_ACTIVE_ROUND"
         };
     }
 
 
-    const bet =
-        getBet();
+    if (
+        state.bet.status !==
+        BET_STATUS.PLACED
+    ) {
 
-
-    const refundResult =
-        credit(
-            bet.amount,
-            {
-                type:
-                    WALLET_TRANSACTION_TYPES
-                        .BET_REFUND,
-
-                metadata: {
-                    source:
-                        "BET_CANCEL",
-
-                    originalBetTransactionId:
-                        bet.transactionId
-                }
-            }
-        );
-
-
-    if (!refundResult.success) {
         return {
             success: false,
 
             reason:
+                "NO_CANCELLABLE_BET"
+        };
+    }
+
+
+    if (
+        !(
+            state.phase ===
+                GAME_PHASES.BETTING ||
+            state.phase ===
+                GAME_PHASES.COUNTDOWN
+        )
+    ) {
+
+        return {
+            success: false,
+
+            reason:
+                "BET_CANCELLATION_CLOSED"
+        };
+    }
+
+
+    const amount =
+        roundTo(
+            state.bet.amount,
+            BET_CONFIG.DECIMALS
+        );
+
+
+    if (
+        amount <= 0
+    ) {
+
+        return {
+            success: false,
+
+            reason:
+                "INVALID_BET_STATE"
+        };
+    }
+
+
+    /* -----------------------------------------------------
+       Refund first.
+
+       State changes only after Wallet credit succeeds.
+    ----------------------------------------------------- */
+
+    const refundResult =
+        refundBet(
+            amount,
+            {
+                roundId:
+                    state.roundId,
+
+                reason:
+                    "BET_CANCELLED"
+            }
+        );
+
+
+    if (
+        !refundResult.success
+    ) {
+
+        return {
+            success: false,
+
+            reason:
+                "BET_REFUND_FAILED",
+
+            walletReason:
                 refundResult.reason
         };
     }
 
 
-    const stateResult =
-        markBetCancelled({
-            transactionId:
+    const cancelledAt =
+        new Date()
+            .toISOString();
+
+
+    const updated =
+        setBetCancelled({
+
+            refundTransactionId:
                 refundResult
-                    .transaction
-                    .id
+                    .transactionId,
+
+            cancelledAt
         });
 
 
-    if (!stateResult.success) {
+    if (!updated) {
+
         /*
-         At this point the wallet has already been refunded.
+         This situation is extremely unlikely because the
+         round State is in-memory.
 
-         We do NOT debit the wallet again automatically,
-         because double-reversing financial state is riskier
-         than leaving the round state inconsistent.
-
-         Higher-level settlement logic can detect and resolve
-         this edge case.
+         The refund has already happened, so do NOT attempt
+         to debit the wallet again as a rollback.
         */
 
         return {
             success: false,
 
             reason:
-                "BET_CANCEL_STATE_FAILED",
+                "BET_STATE_UPDATE_FAILED_AFTER_REFUND",
 
-            stateReason:
-                stateResult.reason,
+            refunded:
+                amount,
 
-            refundCompleted:
-                true,
-
-            refundTransaction:
-                refundResult
-                    .transaction
+            balance:
+                refundResult.balance
         };
     }
 
@@ -510,239 +753,171 @@ function cancelBet() {
     playBetCancel();
 
 
+    notifyBettingListeners({
+
+        type:
+            BETTING_EVENT_TYPES
+                .BET_CANCELLED,
+
+        roundId:
+            state.roundId,
+
+        amount,
+
+        refundTransactionId:
+            refundResult
+                .transactionId,
+
+        balance:
+            refundResult.balance,
+
+        cancelledAt
+    });
+
+
     return {
         success: true,
+
+        roundId:
+            state.roundId,
 
         refunded:
-            bet.amount,
+            amount,
 
-        balanceBefore:
+        refundTransactionId:
             refundResult
-                .balanceBefore,
+                .transactionId,
 
-        balanceAfter:
-            refundResult
-                .balanceAfter,
+        balance:
+            refundResult.balance,
 
-        refundTransaction:
-            refundResult
-                .transaction
+        cancelledAt
     };
 }
 
 
 /* =========================================================
-   ACTIVATE CURRENT BET
-
-   Call this at the transition into FLYING.
-
-   A PLACED bet becomes ACTIVE.
-========================================================= */
-
-function activateCurrentBet() {
-    const bet =
-        getBet();
-
-
-    if (
-        bet.status ===
-        BET_STATUS.NONE
-    ) {
-        return {
-            success: true,
-
-            activated: false,
-
-            reason:
-                "NO_BET"
-        };
-    }
-
-
-    if (
-        bet.status ===
-        BET_STATUS.CANCELLED
-    ) {
-        return {
-            success: true,
-
-            activated: false,
-
-            reason:
-                "BET_CANCELLED"
-        };
-    }
-
-
-    if (
-        bet.status ===
-        BET_STATUS.ACTIVE
-    ) {
-        return {
-            success: true,
-
-            activated: false,
-
-            reason:
-                "ALREADY_ACTIVE",
-
-            bet
-        };
-    }
-
-
-    if (
-        bet.status !==
-        BET_STATUS.PLACED
-    ) {
-        return {
-            success: false,
-
-            reason:
-                "INVALID_BET_STATUS",
-
-            status:
-                bet.status
-        };
-    }
-
-
-    const result =
-        activateBet();
-
-
-    if (!result.success) {
-        return result;
-    }
-
-
-    return {
-        success: true,
-
-        activated: true,
-
-        bet:
-            result.bet
-    };
-}
-
-
-/* =========================================================
-   BETTING STATUS
+   GET BETTING STATUS
 ========================================================= */
 
 function getBettingStatus() {
-    const phase =
-        getPhase();
 
-    const bet =
-        getBet();
-
-    return {
-        phase,
-
-        bettingOpen:
-            phase ===
-            GAME_PHASES.BETTING,
-
-        cancellationOpen:
-            canCancelBet(),
-
-        balance:
-            getBalance(),
-
-        bet,
-
-        hasBet:
-            bet.status !==
-            BET_STATUS.NONE,
-
-        betActive:
-            bet.status ===
-            BET_STATUS.ACTIVE
-    };
-}
+    const state =
+        getState();
 
 
-/* =========================================================
-   BET AMOUNT HELPERS
-========================================================= */
-
-function getMinimumBet() {
-    return (
-        BETTING_CONFIG.MIN_BET
-    );
-}
+    const cancellable =
+        canCancelBet();
 
 
-function getMaximumBet() {
-    return (
-        BETTING_CONFIG.MAX_BET
-    );
-}
+    const bettingOpen =
+        state.phase ===
+            GAME_PHASES.BETTING;
 
 
-/* =========================================================
-   QUICK BET VALIDATION
-
-   Useful for UI input feedback without performing wallet
-   operations.
-========================================================= */
-
-function previewBet(
-    amount
-) {
-    const normalized =
-        normalizeBetAmount(
-            amount
+    const canPlace =
+        (
+            bettingOpen &&
+            state.bet.status ===
+                BET_STATUS.NONE
         );
 
 
-    if (normalized === null) {
-        return {
-            valid: false,
-
-            reason:
-                "INVALID_BET_AMOUNT",
-
-            min:
-                BETTING_CONFIG.MIN_BET,
-
-            max:
-                BETTING_CONFIG.MAX_BET
-        };
-    }
-
-
-    const balance =
-        getBalance();
-
-
     return {
-        valid:
-            normalized <=
-            balance,
 
-        reason:
-            normalized <=
-            balance
-                ? null
-                : "INSUFFICIENT_BALANCE",
+        roundId:
+            state.roundId,
+
+        phase:
+            state.phase,
+
+        bettingOpen,
+
+        canPlace,
+
+        cancellable,
+
+        status:
+            state.bet.status,
 
         amount:
-            normalized,
+            state.bet.amount,
 
-        balance,
+        placedAt:
+            state.bet.placedAt,
 
-        balanceAfter:
-            normalized <= balance
-                ? roundTo(
-                    balance -
-                    normalized,
-                    2
-                )
-                : balance
+        activatedAt:
+            state.bet.activatedAt,
+
+        cancelledAt:
+            state.bet.cancelledAt,
+
+        transactionId:
+            state.bet.transactionId,
+
+        refundTransactionId:
+            state.bet
+                .refundTransactionId,
+
+        balance:
+            getBalance()
     };
+}
+
+
+/* =========================================================
+   HAS BET
+========================================================= */
+
+function hasBet() {
+
+    const state =
+        getState();
+
+
+    return ![
+        BET_STATUS.NONE,
+        BET_STATUS.CANCELLED
+    ].includes(
+        state.bet.status
+    );
+}
+
+
+/* =========================================================
+   HAS ACTIVE BET
+========================================================= */
+
+function hasActiveBet() {
+
+    const state =
+        getState();
+
+
+    return (
+        state.bet.status ===
+        BET_STATUS.ACTIVE
+    );
+}
+
+
+/* =========================================================
+   COMPATIBILITY ALIASES
+========================================================= */
+
+function submitBet(
+    amount
+) {
+
+    return placeBet(
+        amount
+    );
+}
+
+
+function removeBet() {
+
+    return cancelBet();
 }
 
 
@@ -751,20 +926,25 @@ function previewBet(
 ========================================================= */
 
 export {
-    BETTING_CONFIG,
+    BET_CONFIG,
+    BETTING_EVENT_TYPES,
 
     normalizeBetAmount,
-    validateBet,
     previewBet,
 
     placeBet,
     cancelBet,
 
     canCancelBet,
-    activateCurrentBet,
 
     getBettingStatus,
 
-    getMinimumBet,
-    getMaximumBet
+    hasBet,
+    hasActiveBet,
+
+    subscribeToBetting,
+
+    /* Compatibility */
+    submitBet,
+    removeBet
 };
