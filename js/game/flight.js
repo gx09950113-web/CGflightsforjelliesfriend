@@ -6,6 +6,8 @@
 
    Responsibilities:
    - Run pre-flight countdown
+   - Prepare crash point
+   - Activate placed bet at takeoff
    - Start flight
    - Update multiplier over time
    - Drive requestAnimationFrame loop
@@ -16,7 +18,8 @@
 
    IMPORTANT:
    This module does NOT:
-   - Deduct bets
+   - Place bets
+   - Deduct wallet balance
    - Perform cashout
    - Perform settlement
    - Write game history
@@ -48,6 +51,10 @@ import {
 } from "./crash.js";
 
 import {
+    activateCurrentBet
+} from "./betting.js";
+
+import {
     roundTo,
     clamp,
     isFiniteNumber
@@ -74,42 +81,39 @@ const FLIGHT_CONFIG = Object.freeze({
     */
     COUNTDOWN_SECONDS: 3,
 
-
     /*
-     Minimum multiplier.
+     Initial multiplier.
     */
     START_MULTIPLIER: 1.00,
 
-
     /*
-     Visual/display precision.
+     Display / state precision.
     */
     MULTIPLIER_DECIMALS: 2,
 
-
     /*
-     Exponential growth coefficient.
+     Exponential multiplier growth coefficient.
 
      Formula:
-         multiplier = e^(GROWTH_RATE * seconds)
+         multiplier = e^(GROWTH_RATE × seconds)
 
-     0.085 gives a moderate acceleration curve.
+     Approx:
+         0 sec  -> 1.00×
+         5 sec  -> 1.53×
+         8 sec  -> 1.97×
+         10 sec -> 2.34×
+         15 sec -> 3.58×
+         20 sec -> 5.47×
     */
     GROWTH_RATE: 0.085,
 
-
     /*
-     Maximum multiplier accepted by flight runtime.
-
-     crash.js currently also caps generated crash values.
+     Hard runtime cap.
     */
     MAX_MULTIPLIER: 1000,
 
-
     /*
-     Interval for optional multiplier-rise sound.
-
-     Prevents playing the sound every animation frame.
+     Prevent multiplier-rise sound from firing every frame.
     */
     MULTIPLIER_SOUND_INTERVAL_MS: 900
 });
@@ -149,8 +153,7 @@ function subscribeToFlight(
     listener
 ) {
     if (
-        typeof listener !==
-        "function"
+        typeof listener !== "function"
     ) {
         throw new TypeError(
             "[CG Flight] Flight listener must be a function."
@@ -168,6 +171,10 @@ function subscribeToFlight(
     };
 }
 
+
+/* =========================================================
+   EMIT FLIGHT EVENT
+========================================================= */
 
 function emitFlightEvent(
     type,
@@ -204,10 +211,8 @@ function emitFlightEvent(
 
 function getPerformanceNow() {
     if (
-        typeof performance !==
-            "undefined" &&
-        typeof performance.now ===
-            "function"
+        typeof performance !== "undefined" &&
+        typeof performance.now === "function"
     ) {
         return performance.now();
     }
@@ -218,19 +223,6 @@ function getPerformanceNow() {
 
 /* =========================================================
    MULTIPLIER CURVE
-
-   Starts at exactly 1.00×.
-
-   Formula:
-       e^(growthRate * seconds)
-
-   Examples approximately:
-       0 sec  -> 1.00×
-       5 sec  -> 1.53×
-       8 sec  -> 1.97×
-       10 sec -> 2.34×
-       15 sec -> 3.58×
-       20 sec -> 5.47×
 ========================================================= */
 
 function calculateFlightMultiplier(
@@ -252,16 +244,28 @@ function calculateFlightMultiplier(
         );
     }
 
-    const safeGrowthRate =
-        Math.max(
-            0.001,
-            Number(growthRate) ||
-                FLIGHT_CONFIG
-                    .GROWTH_RATE
+
+    const numericGrowthRate =
+        Number(
+            growthRate
         );
+
+
+    const safeGrowthRate =
+        isFiniteNumber(
+            numericGrowthRate
+        )
+            ? Math.max(
+                0.001,
+                numericGrowthRate
+            )
+            : FLIGHT_CONFIG
+                .GROWTH_RATE;
+
 
     const elapsedSeconds =
         elapsedMs / 1000;
+
 
     const rawMultiplier =
         Math.exp(
@@ -269,13 +273,20 @@ function calculateFlightMultiplier(
             elapsedSeconds
         );
 
+
     return roundTo(
         clamp(
             rawMultiplier,
-            FLIGHT_CONFIG.START_MULTIPLIER,
-            FLIGHT_CONFIG.MAX_MULTIPLIER
+
+            FLIGHT_CONFIG
+                .START_MULTIPLIER,
+
+            FLIGHT_CONFIG
+                .MAX_MULTIPLIER
         ),
-        FLIGHT_CONFIG.MULTIPLIER_DECIMALS
+
+        FLIGHT_CONFIG
+            .MULTIPLIER_DECIMALS
     );
 }
 
@@ -284,8 +295,6 @@ function calculateFlightMultiplier(
    ESTIMATE TIME TO MULTIPLIER
 
    Inverse of the exponential curve.
-
-   Useful later for animation/UI positioning.
 ========================================================= */
 
 function estimateTimeToMultiplier(
@@ -304,21 +313,38 @@ function estimateTimeToMultiplier(
         return null;
     }
 
-    if (multiplier === 1) {
+
+    if (
+        multiplier === 1
+    ) {
         return 0;
     }
 
-    const safeGrowthRate =
-        Math.max(
-            0.001,
-            Number(growthRate) ||
-                FLIGHT_CONFIG
-                    .GROWTH_RATE
+
+    const numericGrowthRate =
+        Number(
+            growthRate
         );
 
+
+    const safeGrowthRate =
+        isFiniteNumber(
+            numericGrowthRate
+        )
+            ? Math.max(
+                0.001,
+                numericGrowthRate
+            )
+            : FLIGHT_CONFIG
+                .GROWTH_RATE;
+
+
     const seconds =
-        Math.log(multiplier) /
+        Math.log(
+            multiplier
+        ) /
         safeGrowthRate;
+
 
     return Math.max(
         0,
@@ -330,15 +356,20 @@ function estimateTimeToMultiplier(
 /* =========================================================
    PREPARE FLIGHT
 
-   Ensures the round has a crash point before countdown.
+   Requirements:
+   - Current phase must be BETTING
+   - Crash point must exist
+   - Multiplier resets to 1.00×
 ========================================================= */
 
 function prepareFlight() {
     const phase =
         getPhase();
 
+
     if (
-        phase !== GAME_PHASES.BETTING
+        phase !==
+        GAME_PHASES.BETTING
     ) {
         return {
             success: false,
@@ -354,12 +385,14 @@ function prepareFlight() {
     const existingCrash =
         getCrashMultiplier();
 
+
     if (
         existingCrash === null ||
         existingCrash === undefined
     ) {
         const crashResult =
             prepareCrashPoint();
+
 
         if (!crashResult.success) {
             return {
@@ -372,17 +405,31 @@ function prepareFlight() {
     }
 
 
-    setMultiplier(
-        FLIGHT_CONFIG
-            .START_MULTIPLIER
-    );
+    const multiplierResult =
+        setMultiplier(
+            FLIGHT_CONFIG
+                .START_MULTIPLIER
+        );
+
+
+    if (!multiplierResult.success) {
+        return {
+            success: false,
+
+            reason:
+                multiplierResult.reason
+        };
+    }
 
 
     return {
         success: true,
 
         crashMultiplier:
-            getCrashMultiplier()
+            getCrashMultiplier(),
+
+        multiplier:
+            getMultiplier()
     };
 }
 
@@ -414,6 +461,7 @@ function startCountdown({
     const phase =
         getPhase();
 
+
     if (
         phase !==
         GAME_PHASES.BETTING
@@ -429,28 +477,50 @@ function startCountdown({
     }
 
 
+    /* -----------------------------------------------------
+       Prepare crash point and initial multiplier.
+    ----------------------------------------------------- */
+
     const preparation =
         prepareFlight();
+
 
     if (!preparation.success) {
         return preparation;
     }
 
 
-    const safeSeconds =
-        Math.max(
-            0,
-            Math.floor(
-                Number(seconds) ||
-                0
-            )
-        );
+    /* -----------------------------------------------------
+       Normalize countdown.
+    ----------------------------------------------------- */
 
+    const numericSeconds =
+        Number(seconds);
+
+
+    const safeSeconds =
+        Number.isFinite(
+            numericSeconds
+        )
+            ? Math.max(
+                0,
+                Math.floor(
+                    numericSeconds
+                )
+            )
+            : FLIGHT_CONFIG
+                .COUNTDOWN_SECONDS;
+
+
+    /* -----------------------------------------------------
+       BETTING -> COUNTDOWN
+    ----------------------------------------------------- */
 
     const phaseResult =
         setPhase(
             GAME_PHASES.COUNTDOWN
         );
+
 
     if (!phaseResult.success) {
         return phaseResult;
@@ -459,6 +529,7 @@ function startCountdown({
 
     const startedAt =
         Date.now();
+
 
     const endsAt =
         startedAt +
@@ -493,9 +564,16 @@ function startCountdown({
     );
 
 
-    if (safeSeconds === 0) {
+    /* -----------------------------------------------------
+       No countdown.
+    ----------------------------------------------------- */
+
+    if (
+        safeSeconds === 0
+    ) {
         runtime.countdownRunning =
             false;
+
 
         setCountdown({
             remaining: 0,
@@ -506,25 +584,39 @@ function startCountdown({
                 startedAt
         });
 
+
+        emitFlightEvent(
+            "COUNTDOWN_END",
+            {
+                crashMultiplier:
+                    getCrashMultiplier()
+            }
+        );
+
+
         if (autoStartFlight) {
             return startFlight();
         }
 
+
         return {
             success: true,
-            countdown: 0
+
+            countdown: 0,
+
+            crashMultiplier:
+                getCrashMultiplier()
         };
     }
 
 
+    /* -----------------------------------------------------
+       First visible tick.
+    ----------------------------------------------------- */
+
     let remaining =
         safeSeconds;
 
-
-    /*
-     Play one countdown sound immediately for the
-     first displayed number.
-    */
 
     playCountdown();
 
@@ -537,18 +629,27 @@ function startCountdown({
     );
 
 
+    /* -----------------------------------------------------
+       Countdown timer.
+    ----------------------------------------------------- */
+
     runtime.countdownTimerId =
         window.setInterval(
             () => {
+
                 remaining -= 1;
+
+
+                const displayedRemaining =
+                    Math.max(
+                        0,
+                        remaining
+                    );
 
 
                 setCountdown({
                     remaining:
-                        Math.max(
-                            0,
-                            remaining
-                        ),
+                        displayedRemaining,
 
                     startedAt,
 
@@ -560,21 +661,22 @@ function startCountdown({
                     "COUNTDOWN_TICK",
                     {
                         remaining:
-                            Math.max(
-                                0,
-                                remaining
-                            )
+                            displayedRemaining
                     }
                 );
 
 
-                if (remaining > 0) {
+                if (
+                    remaining > 0
+                ) {
                     playCountdown();
+
                     return;
                 }
 
 
                 clearCountdownTimer();
+
 
                 runtime.countdownRunning =
                     false;
@@ -589,10 +691,24 @@ function startCountdown({
                 );
 
 
-                if (autoStartFlight) {
-                    startFlight();
+                if (
+                    autoStartFlight
+                ) {
+                    const result =
+                        startFlight();
+
+
+                    if (
+                        !result.success
+                    ) {
+                        console.error(
+                            "[CG Flight] Unable to start flight after countdown:",
+                            result
+                        );
+                    }
                 }
             },
+
             1000
         );
 
@@ -610,21 +726,71 @@ function startCountdown({
 
 
 /* =========================================================
-   CLEAR COUNTDOWN
+   CLEAR COUNTDOWN TIMER
 ========================================================= */
 
 function clearCountdownTimer() {
     if (
-        runtime.countdownTimerId !==
+        runtime.countdownTimerId ===
         null
     ) {
-        window.clearInterval(
-            runtime.countdownTimerId
-        );
-
-        runtime.countdownTimerId =
-            null;
+        return;
     }
+
+
+    window.clearInterval(
+        runtime.countdownTimerId
+    );
+
+
+    runtime.countdownTimerId =
+        null;
+}
+
+
+/* =========================================================
+   ACTIVATE BET FOR TAKEOFF
+
+   The player's PLACED bet becomes ACTIVE exactly when the
+   round begins flying.
+
+   No-bet and cancelled-bet rounds are both valid.
+========================================================= */
+
+function activateBetForTakeoff() {
+    const result =
+        activateCurrentBet();
+
+
+    if (!result.success) {
+        return {
+            success: false,
+
+            reason:
+                result.reason,
+
+            bet:
+                result.bet,
+
+            status:
+                result.status
+        };
+    }
+
+
+    return {
+        success: true,
+
+        activated:
+            result.activated ===
+            true,
+
+        reason:
+            result.reason ?? null,
+
+        bet:
+            result.bet ?? null
+    };
 }
 
 
@@ -633,7 +799,9 @@ function clearCountdownTimer() {
 ========================================================= */
 
 function startFlight() {
-    if (runtime.flightRunning) {
+    if (
+        runtime.flightRunning
+    ) {
         return {
             success: false,
 
@@ -643,21 +811,22 @@ function startFlight() {
     }
 
 
-    const phase =
+    const initialPhase =
         getPhase();
 
 
-    /*
-     Normally flight begins from COUNTDOWN.
+    /* -----------------------------------------------------
+       Valid normal state:
+       COUNTDOWN
 
-     Allow BETTING only for controlled testing or
-     countdown-less rounds.
-    */
+       BETTING is also allowed for controlled direct-start
+       testing.
+    ----------------------------------------------------- */
 
     if (
-        phase !==
+        initialPhase !==
             GAME_PHASES.COUNTDOWN &&
-        phase !==
+        initialPhase !==
             GAME_PHASES.BETTING
     ) {
         return {
@@ -666,60 +835,147 @@ function startFlight() {
             reason:
                 "INVALID_PHASE",
 
-            phase
+            phase:
+                initialPhase
         };
     }
 
 
-    if (
-        getCrashMultiplier() ===
-        null
-    ) {
-        const prepared =
-            prepareFlight();
-
-        if (!prepared.success) {
-            return prepared;
-        }
-    }
-
-
-    /*
-     If starting directly from BETTING, phase transition
-     requires going through COUNTDOWN according to state.js.
-    */
+    /* -----------------------------------------------------
+       Direct start from BETTING still needs preparation.
+    ----------------------------------------------------- */
 
     if (
-        getPhase() ===
+        initialPhase ===
         GAME_PHASES.BETTING
     ) {
+        const preparation =
+            prepareFlight();
+
+
+        if (!preparation.success) {
+            return preparation;
+        }
+
+
         const countdownPhase =
             setPhase(
                 GAME_PHASES.COUNTDOWN
             );
 
-        if (
-            !countdownPhase.success
-        ) {
+
+        if (!countdownPhase.success) {
             return countdownPhase;
         }
     }
 
+
+    /* -----------------------------------------------------
+       Crash point must exist.
+    ----------------------------------------------------- */
+
+    const crashMultiplier =
+        getCrashMultiplier();
+
+
+    if (
+        !isFiniteNumber(
+            crashMultiplier
+        )
+    ) {
+        return {
+            success: false,
+
+            reason:
+                "MISSING_CRASH_POINT"
+        };
+    }
+
+
+    /* -----------------------------------------------------
+       Stop countdown runtime before takeoff.
+    ----------------------------------------------------- */
+
+    clearCountdownTimer();
+
+
+    runtime.countdownRunning =
+        false;
+
+
+    /* -----------------------------------------------------
+       IMPORTANT:
+       Activate the player's bet BEFORE entering the live
+       flight runtime.
+
+       PLACED -> ACTIVE
+
+       NONE / CANCELLED are also legitimate states and do
+       not prevent the round from flying.
+    ----------------------------------------------------- */
+
+    const betActivation =
+        activateBetForTakeoff();
+
+
+    if (!betActivation.success) {
+        emitFlightEvent(
+            "FLIGHT_START_FAILED",
+            {
+                reason:
+                    "BET_ACTIVATION_FAILED",
+
+                betReason:
+                    betActivation.reason,
+
+                state:
+                    getState()
+            }
+        );
+
+
+        return {
+            success: false,
+
+            reason:
+                "BET_ACTIVATION_FAILED",
+
+            betReason:
+                betActivation.reason
+        };
+    }
+
+
+    /* -----------------------------------------------------
+       COUNTDOWN -> FLYING
+    ----------------------------------------------------- */
 
     const phaseResult =
         setPhase(
             GAME_PHASES.FLYING
         );
 
+
     if (!phaseResult.success) {
+        emitFlightEvent(
+            "FLIGHT_START_FAILED",
+            {
+                reason:
+                    phaseResult.reason,
+
+                state:
+                    getState()
+            }
+        );
+
+
         return phaseResult;
     }
 
 
-    clearCountdownTimer();
-
-    runtime.countdownRunning =
-        false;
+    /* -----------------------------------------------------
+       Initialize runtime.
+    ----------------------------------------------------- */
 
     runtime.flightRunning =
         true;
@@ -734,10 +990,25 @@ function startFlight() {
         getPerformanceNow();
 
 
-    setMultiplier(
-        FLIGHT_CONFIG
-            .START_MULTIPLIER
-    );
+    const multiplierResult =
+        setMultiplier(
+            FLIGHT_CONFIG
+                .START_MULTIPLIER
+        );
+
+
+    if (!multiplierResult.success) {
+        runtime.flightRunning =
+            false;
+
+
+        return {
+            success: false,
+
+            reason:
+                multiplierResult.reason
+        };
+    }
 
 
     markFlightStarted(
@@ -745,10 +1016,23 @@ function startFlight() {
     );
 
 
+    /* -----------------------------------------------------
+       Audio.
+    ----------------------------------------------------- */
+
     playTakeoff();
 
     startFlyingLoop();
 
+
+    /* -----------------------------------------------------
+       Event.
+
+       By this point:
+       - phase = FLYING
+       - placed bet = ACTIVE
+       - crash point exists
+    ----------------------------------------------------- */
 
     emitFlightEvent(
         "FLIGHT_START",
@@ -758,15 +1042,25 @@ function startFlight() {
                     .START_MULTIPLIER,
 
             crashMultiplier:
-                getCrashMultiplier()
+                getCrashMultiplier(),
+
+            betActivated:
+                betActivation
+                    .activated,
+
+            bet:
+                betActivation
+                    .bet
         }
     );
 
 
-    /*
-     Important special case:
-     crash point can be exactly 1.00×.
-    */
+    /* -----------------------------------------------------
+       Immediate crash at exactly 1.00×.
+
+       The bet has already become ACTIVE, therefore the later
+       settlement correctly recognizes it as a LOSS.
+    ----------------------------------------------------- */
 
     if (
         hasReachedCrashPoint(
@@ -774,21 +1068,36 @@ function startFlight() {
                 .START_MULTIPLIER
         )
     ) {
-        handleCrash(
-            FLIGHT_CONFIG
-                .START_MULTIPLIER
-        );
+        const crashResult =
+            handleCrash(
+                FLIGHT_CONFIG
+                    .START_MULTIPLIER
+            );
+
 
         return {
-            success: true,
+            success:
+                crashResult.success,
 
-            immediateCrash: true,
+            immediateCrash:
+                true,
 
             crashMultiplier:
-                getCrashMultiplier()
+                getCrashMultiplier(),
+
+            betActivated:
+                betActivation
+                    .activated,
+
+            crash:
+                crashResult
         };
     }
 
+
+    /* -----------------------------------------------------
+       Begin animation loop.
+    ----------------------------------------------------- */
 
     runtime.animationFrameId =
         requestAnimationFrame(
@@ -799,8 +1108,15 @@ function startFlight() {
     return {
         success: true,
 
+        immediateCrash:
+            false,
+
         crashMultiplier:
-            getCrashMultiplier()
+            getCrashMultiplier(),
+
+        betActivated:
+            betActivation
+                .activated
     };
 }
 
@@ -825,8 +1141,10 @@ function flightFrame(
     ) {
         stopAnimationFrame();
 
+
         runtime.flightRunning =
             false;
+
 
         return;
     }
@@ -844,9 +1162,14 @@ function flightFrame(
             "MISSING_FLIGHT_START_TIME"
         );
 
+
         return;
     }
 
+
+    /* -----------------------------------------------------
+       Elapsed runtime.
+    ----------------------------------------------------- */
 
     const elapsedMs =
         Math.max(
@@ -855,6 +1178,10 @@ function flightFrame(
                 startTime
         );
 
+
+    /* -----------------------------------------------------
+       Calculate next multiplier.
+    ----------------------------------------------------- */
 
     let nextMultiplier =
         calculateFlightMultiplier(
@@ -866,17 +1193,23 @@ function flightFrame(
         getCrashMultiplier();
 
 
-    /*
-     Prevent the visible/state multiplier from overshooting
-     the actual crash point.
+    /* -----------------------------------------------------
+       Never visually overshoot crash point.
 
-     Example:
-     Previous frame = 2.46
-     Calculated next = 2.49
-     Crash point = 2.47
+       Example:
 
-     Final multiplier becomes exactly 2.47.
-    */
+       previous frame:
+       2.46×
+
+       calculated:
+       2.49×
+
+       actual crash:
+       2.47×
+
+       state/display:
+       2.47×
+    ----------------------------------------------------- */
 
     if (
         isFiniteNumber(
@@ -890,6 +1223,10 @@ function flightFrame(
     }
 
 
+    /* -----------------------------------------------------
+       Update state.
+    ----------------------------------------------------- */
+
     updateFlightElapsed(
         elapsedMs
     );
@@ -899,6 +1236,12 @@ function flightFrame(
         nextMultiplier
     );
 
+
+    /* -----------------------------------------------------
+       Publish multiplier.
+
+       cashout.js listens to this event for Auto Cash Out.
+    ----------------------------------------------------- */
 
     emitFlightEvent(
         "MULTIPLIER_UPDATE",
@@ -918,6 +1261,17 @@ function flightFrame(
     );
 
 
+    /* -----------------------------------------------------
+       Crash check happens AFTER the multiplier event.
+
+       Auto Cash Out is still safe because cashout.js checks:
+
+           targetMultiplier < crashMultiplier
+
+       Therefore an Auto target equal to the crash point
+       cannot win.
+    ----------------------------------------------------- */
+
     if (
         hasReachedCrashPoint(
             nextMultiplier
@@ -926,6 +1280,7 @@ function flightFrame(
         handleCrash(
             nextMultiplier
         );
+
 
         return;
     }
@@ -996,11 +1351,13 @@ function handleCrash(
     runtime.crashHandled =
         true;
 
+
     runtime.flightRunning =
         false;
 
 
     stopAnimationFrame();
+
 
     stopFlyingLoop();
 
@@ -1017,15 +1374,38 @@ function handleCrash(
             : multiplier;
 
 
-    setMultiplier(
-        finalMultiplier
-    );
+    /* -----------------------------------------------------
+       Lock final multiplier exactly to crash point.
+    ----------------------------------------------------- */
 
+    const multiplierResult =
+        setMultiplier(
+            finalMultiplier
+        );
+
+
+    if (!multiplierResult.success) {
+        return {
+            success: false,
+
+            reason:
+                multiplierResult.reason
+        };
+    }
+
+
+    /* -----------------------------------------------------
+       Save crash timing.
+    ----------------------------------------------------- */
 
     markFlightCrashed(
         Date.now()
     );
 
+
+    /* -----------------------------------------------------
+       FLYING -> CRASHED
+    ----------------------------------------------------- */
 
     const phaseResult =
         setPhase(
@@ -1033,9 +1413,7 @@ function handleCrash(
         );
 
 
-    if (
-        !phaseResult.success
-    ) {
+    if (!phaseResult.success) {
         return {
             success: false,
 
@@ -1052,6 +1430,14 @@ function handleCrash(
         getState();
 
 
+    /* -----------------------------------------------------
+       settlement.js listens to this event and performs:
+
+       CRASHED
+       -> SETTLING
+       -> ENDED
+    ----------------------------------------------------- */
+
     emitFlightEvent(
         "CRASH",
         {
@@ -1066,7 +1452,15 @@ function handleCrash(
                     .elapsedMs,
 
             roundId:
-                state.roundId
+                state.roundId,
+
+            betStatus:
+                state.bet
+                    .status,
+
+            cashoutCompleted:
+                state.cashout
+                    .completed
         }
     );
 
@@ -1090,26 +1484,35 @@ function handleCrash(
 
 function stopAnimationFrame() {
     if (
-        runtime.animationFrameId !==
+        runtime.animationFrameId ===
         null
     ) {
-        cancelAnimationFrame(
-            runtime.animationFrameId
-        );
-
-        runtime.animationFrameId =
-            null;
+        return;
     }
+
+
+    cancelAnimationFrame(
+        runtime.animationFrameId
+    );
+
+
+    runtime.animationFrameId =
+        null;
 }
 
 
 /* =========================================================
    ABORT FLIGHT
 
-   Intended for unexpected runtime failures.
+   Intended for runtime failures.
 
-   This does NOT perform settlement/refund.
-   Higher-level game controller must decide what to do.
+   Does NOT:
+   - refund bet
+   - settle round
+   - write history
+
+   A higher-level game controller must decide how an aborted
+   round should be recovered.
 ========================================================= */
 
 function abortFlight(
@@ -1118,7 +1521,9 @@ function abortFlight(
 ) {
     clearCountdownTimer();
 
+
     stopAnimationFrame();
+
 
     stopFlyingLoop();
 
@@ -1131,6 +1536,9 @@ function abortFlight(
 
     runtime.flightStartPerformanceTime =
         null;
+
+    runtime.lastMultiplierSoundAt =
+        0;
 
     runtime.crashHandled =
         false;
@@ -1158,13 +1566,15 @@ function abortFlight(
 /* =========================================================
    RESET FLIGHT RUNTIME
 
-   Call when creating a new round if required.
+   Call before / when starting a new round.
 ========================================================= */
 
 function resetFlightRuntime() {
     clearCountdownTimer();
 
+
     stopAnimationFrame();
+
 
     stopFlyingLoop();
 
@@ -1194,6 +1604,10 @@ function resetFlightRuntime() {
 ========================================================= */
 
 function getFlightRuntimeStatus() {
+    const state =
+        getState();
+
+
     return {
         countdownRunning:
             runtime
@@ -1208,13 +1622,21 @@ function getFlightRuntimeStatus() {
                 .crashHandled,
 
         multiplier:
-            getMultiplier(),
+            state.multiplier,
 
         crashMultiplier:
-            getCrashMultiplier(),
+            state.crashMultiplier,
 
         phase:
-            getPhase()
+            state.phase,
+
+        betStatus:
+            state.bet
+                .status,
+
+        cashoutCompleted:
+            state.cashout
+                .completed
     };
 }
 
