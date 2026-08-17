@@ -7,6 +7,7 @@
    Responsibilities:
    - Consume completed settlement records
    - Update persistent player statistics
+   - Prevent duplicate statistics across page reloads
    - Count completed rounds
    - Count valid bets
    - Track wagered / returned coins
@@ -17,11 +18,16 @@
    - Produce derived statistics
    - Automatically record completed settlements
 
+   Persistent duplicate strategy:
+   - Every history entry may contain:
+         statisticsRecorded: true
+   - Statistics and this marker are written atomically
+     through the same updateData() operation.
+
    IMPORTANT:
    This module does NOT:
    - Perform settlement
    - Modify wallet balance
-   - Write round history
    - Generate crash results
 ========================================================= */
 
@@ -39,6 +45,10 @@ import {
 } from "./settlement.js";
 
 import {
+    recordHistory
+} from "./history.js";
+
+import {
     roundTo,
     clone,
     isFiniteNumber
@@ -50,7 +60,6 @@ import {
 ========================================================= */
 
 const STATISTICS_CONFIG = Object.freeze({
-
     DECIMALS: 2
 });
 
@@ -65,6 +74,11 @@ const DEFAULT_STATISTICS = Object.freeze({
 
     totalRounds: 0,
 
+    /*
+     Only completed WIN / LOSS bets.
+
+     REFUND and NO_BET are excluded.
+    */
     totalBets: 0,
 
     totalWagered: 0,
@@ -72,16 +86,17 @@ const DEFAULT_STATISTICS = Object.freeze({
     totalReturned: 0,
 
     /*
-     Gross positive profit from winning rounds.
+     Gross positive net profit from winning rounds.
     */
     totalProfit: 0,
 
     /*
-     Gross loss stored as a positive number.
+     Gross player losses stored as a positive value.
 
      Example:
-     Lose 1000 coins
-     totalLoss += 1000
+         LOSS profit = -1000
+
+         totalLoss += 1000
     */
     totalLoss: 0,
 
@@ -94,29 +109,28 @@ const DEFAULT_STATISTICS = Object.freeze({
     highestCrashMultiplier: 0,
 
     /*
-     Highest net profit from one winning round.
+     Highest NET profit from one winning round.
 
      Example:
-     Bet 1000
-     Return 3500
-     Profit 2500
+         Bet      1000
+         Return   3500
+         Profit   2500
 
-     highestSingleWin = 2500
+         highestSingleWin = 2500
     */
     highestSingleWin: 0
 });
 
 
 /* =========================================================
-   SESSION DUPLICATE GUARD
+   SESSION CACHE
 
-   settlement.js itself prevents normal duplicate settlement,
-   but statistics.js also keeps a session-level Round ID set
-   so accidental repeated calls cannot immediately count the
-   same settlement twice.
+   This is now only a performance optimization.
 
-   Persistent round deduplication will later also be covered
-   by history.js.
+   It is NOT the authoritative duplicate guard.
+
+   Persistent duplicate protection comes from:
+       history[].statisticsRecorded
 ========================================================= */
 
 const processedRoundIds =
@@ -146,6 +160,7 @@ function subscribeToStatistics(
     statisticsListeners.add(
         listener
     );
+
 
     return function unsubscribe() {
         statisticsListeners.delete(
@@ -208,6 +223,7 @@ function normalizeNumber(
     const numeric =
         Number(value);
 
+
     if (
         !Number.isFinite(
             numeric
@@ -215,6 +231,7 @@ function normalizeNumber(
     ) {
         return fallback;
     }
+
 
     return roundTo(
         numeric,
@@ -229,6 +246,7 @@ function normalizeNonNegativeNumber(
 ) {
     return Math.max(
         0,
+
         normalizeNumber(
             value,
             fallback
@@ -244,6 +262,7 @@ function normalizeNonNegativeInteger(
     const numeric =
         Number(value);
 
+
     if (
         !Number.isInteger(
             numeric
@@ -252,6 +271,7 @@ function normalizeNonNegativeInteger(
     ) {
         return fallback;
     }
+
 
     return numeric;
 }
@@ -340,6 +360,7 @@ function getStatistics() {
     const data =
         getData();
 
+
     return sanitizeStatistics(
         data.statistics
     );
@@ -417,19 +438,39 @@ function validateSettlement(
     }
 
 
-    const financialValues = [
-        settlement.financial.wagered,
-        settlement.financial.returned,
-        settlement.financial.profit
-    ];
+    const wagered =
+        Number(
+            settlement
+                .financial
+                .wagered
+        );
+
+
+    const returned =
+        Number(
+            settlement
+                .financial
+                .returned
+        );
+
+
+    const profit =
+        Number(
+            settlement
+                .financial
+                .profit
+        );
 
 
     if (
-        financialValues.some(
-            (value) =>
-                !isFiniteNumber(
-                    Number(value)
-                )
+        !isFiniteNumber(
+            wagered
+        ) ||
+        !isFiniteNumber(
+            returned
+        ) ||
+        !isFiniteNumber(
+            profit
         )
     ) {
         return {
@@ -448,14 +489,18 @@ function validateSettlement(
 
 
 /* =========================================================
-   IS VALID BET RESULT
+   VALID BET RESULT
 
-   WIN and LOSS represent completed risk-bearing bets.
+   WIN / LOSS:
+       counted as totalBets
 
-   REFUND is excluded from totalBets because the stake was
-   returned before the flight result became effective.
+   REFUND:
+       stake returned before final risk result,
+       therefore excluded
 
-   NO_BET is also excluded.
+   NO_BET:
+       no player wager,
+       therefore excluded
 ========================================================= */
 
 function isValidBetResult(
@@ -471,9 +516,131 @@ function isValidBetResult(
 
 
 /* =========================================================
+   ENSURE HISTORY ENTRY EXISTS
+
+   Persistent statistics deduplication depends on History.
+
+   Even if recordSettlement() is manually called outside the
+   normal event chain, ensure the settlement has a history
+   entry first.
+
+   recordHistory() itself is duplicate-safe.
+========================================================= */
+
+function ensureHistoryEntry(
+    settlement
+) {
+    const result =
+        recordHistory(
+            settlement
+        );
+
+
+    if (!result.success) {
+        return {
+            success: false,
+
+            reason:
+                result.reason
+        };
+    }
+
+
+    return {
+        success: true,
+
+        recorded:
+            result.recorded,
+
+        entry:
+            result.entry
+    };
+}
+
+
+/* =========================================================
+   FIND HISTORY ENTRY INDEX
+========================================================= */
+
+function findHistoryEntryIndex(
+    history,
+    roundId
+) {
+    if (
+        !Array.isArray(
+            history
+        )
+    ) {
+        return -1;
+    }
+
+
+    return history.findIndex(
+        (entry) =>
+            entry &&
+            entry.roundId ===
+                roundId
+    );
+}
+
+
+/* =========================================================
+   HAS PERSISTENT STATISTICS MARKER
+========================================================= */
+
+function hasPersistentStatisticsRecord(
+    roundId
+) {
+    if (
+        typeof roundId !==
+            "string" ||
+        roundId.length === 0
+    ) {
+        return false;
+    }
+
+
+    const data =
+        getData();
+
+
+    if (
+        !Array.isArray(
+            data.history
+        )
+    ) {
+        return false;
+    }
+
+
+    const entry =
+        data.history.find(
+            (item) =>
+                item &&
+                item.roundId ===
+                    roundId
+        );
+
+
+    return (
+        entry?.statisticsRecorded ===
+        true
+    );
+}
+
+
+/* =========================================================
    RECORD SETTLEMENT
 
-   Main statistics write operation.
+   Persistent flow:
+
+   1. Validate settlement
+   2. Ensure History entry exists
+   3. Locate matching History entry
+   4. Check statisticsRecorded
+   5. Update statistics
+   6. Set statisticsRecorded = true
+   7. Save both atomically
 ========================================================= */
 
 function recordSettlement(
@@ -489,6 +656,8 @@ function recordSettlement(
         return {
             success: false,
 
+            recorded: false,
+
             reason:
                 validation.reason
         };
@@ -500,7 +669,10 @@ function recordSettlement(
 
 
     /* -----------------------------------------------------
-       Session duplicate prevention
+       Fast same-session check.
+
+       Persistent storage is still verified below when this
+       cache does not contain the ID.
     ----------------------------------------------------- */
 
     if (
@@ -522,12 +694,146 @@ function recordSettlement(
     }
 
 
-    let result = null;
+    /* -----------------------------------------------------
+       Persistent pre-check.
+    ----------------------------------------------------- */
 
+    if (
+        hasPersistentStatisticsRecord(
+            roundId
+        )
+    ) {
+        processedRoundIds.add(
+            roundId
+        );
+
+
+        return {
+            success: true,
+
+            recorded: false,
+
+            reason:
+                "ROUND_ALREADY_RECORDED",
+
+            statistics:
+                getStatistics()
+        };
+    }
+
+
+    /* -----------------------------------------------------
+       Ensure the authoritative round record exists.
+
+       This also makes direct/manual statistics recording
+       safe outside the usual settlement event order.
+    ----------------------------------------------------- */
+
+    const historyResult =
+        ensureHistoryEntry(
+            settlement
+        );
+
+
+    if (!historyResult.success) {
+        return {
+            success: false,
+
+            recorded: false,
+
+            reason:
+                "HISTORY_RECORD_REQUIRED",
+
+            historyReason:
+                historyResult.reason
+        };
+    }
+
+
+    let result =
+        null;
+
+
+    /* -----------------------------------------------------
+       Atomic persistent update.
+
+       The statistical counters and the history marker are
+       committed in the SAME Local Storage write.
+    ----------------------------------------------------- */
 
     const savedData =
         updateData(
             (data) => {
+
+                if (
+                    !Array.isArray(
+                        data.history
+                    )
+                ) {
+                    data.history = [];
+                }
+
+
+                const historyIndex =
+                    findHistoryEntryIndex(
+                        data.history,
+                        roundId
+                    );
+
+
+                if (
+                    historyIndex < 0
+                ) {
+                    result = {
+                        success: false,
+
+                        recorded: false,
+
+                        reason:
+                            "HISTORY_ENTRY_NOT_FOUND"
+                    };
+
+
+                    return;
+                }
+
+
+                const historyEntry =
+                    data.history[
+                        historyIndex
+                    ];
+
+
+                /* -----------------------------------------
+                   Persistent duplicate check INSIDE the
+                   atomic update operation.
+
+                   This is the final authority.
+                ------------------------------------------ */
+
+                if (
+                    historyEntry
+                        .statisticsRecorded ===
+                    true
+                ) {
+                    result = {
+                        success: true,
+
+                        recorded: false,
+
+                        reason:
+                            "ROUND_ALREADY_RECORDED",
+
+                        statistics:
+                            sanitizeStatistics(
+                                data.statistics
+                            )
+                    };
+
+
+                    return;
+                }
+
 
                 const previous =
                     sanitizeStatistics(
@@ -542,17 +848,22 @@ function recordSettlement(
 
                 /* -----------------------------------------
                    Every completed round counts.
+
+                   Includes:
+                   WIN
+                   LOSS
+                   REFUND
+                   NO_BET
                 ------------------------------------------ */
 
                 next.totalRounds += 1;
 
 
                 /* -----------------------------------------
-                   Highest crash multiplier
+                   Highest crash multiplier.
 
-                   Includes no-bet and refunded rounds,
-                   because it describes game outcomes,
-                   not player wagering behavior.
+                   This is a game outcome statistic, so even
+                   NO_BET / REFUND rounds may update it.
                 ------------------------------------------ */
 
                 const crashMultiplier =
@@ -572,7 +883,9 @@ function recordSettlement(
 
 
                 /* -----------------------------------------
-                   Valid bet statistics
+                   Valid wagering statistics.
+
+                   Only WIN / LOSS.
                 ------------------------------------------ */
 
                 if (
@@ -580,7 +893,6 @@ function recordSettlement(
                         settlement.result
                     )
                 ) {
-
                     const wagered =
                         normalizeNonNegativeNumber(
                             settlement
@@ -628,19 +940,25 @@ function recordSettlement(
                         );
 
 
-                    /* -------------------------------------
+                    /* =====================================
                        WIN
-                    -------------------------------------- */
+                    ====================================== */
 
                     if (
                         settlement.result ===
                         ROUND_RESULT.WIN
                     ) {
+                        next.cashoutCount +=
+                            1;
 
-                        next.cashoutCount += 1;
 
+                        /* ---------------------------------
+                           Gross positive profit
+                        ---------------------------------- */
 
-                        if (profit > 0) {
+                        if (
+                            profit > 0
+                        ) {
                             next.totalProfit =
                                 roundTo(
                                     next.totalProfit +
@@ -661,6 +979,10 @@ function recordSettlement(
                         }
 
 
+                        /* ---------------------------------
+                           Highest Cash Out multiplier
+                        ---------------------------------- */
+
                         const cashoutMultiplier =
                             normalizeNonNegativeNumber(
                                 settlement
@@ -679,19 +1001,21 @@ function recordSettlement(
                     }
 
 
-                    /* -------------------------------------
+                    /* =====================================
                        LOSS
-                    -------------------------------------- */
+                    ====================================== */
 
                     if (
                         settlement.result ===
                         ROUND_RESULT.LOSS
                     ) {
+                        next.crashLossCount +=
+                            1;
 
-                        next.crashLossCount += 1;
 
-
-                        if (profit < 0) {
+                        if (
+                            profit < 0
+                        ) {
                             next.totalLoss =
                                 roundTo(
                                     next.totalLoss +
@@ -707,14 +1031,39 @@ function recordSettlement(
                 }
 
 
+                /* -----------------------------------------
+                   Save normalized statistics.
+                ------------------------------------------ */
+
                 data.statistics =
                     sanitizeStatistics(
                         next
                     );
 
 
-                result = {
+                /* -----------------------------------------
+                   PERSISTENT DEDUPLICATION MARKER
 
+                   This is written in the same updateData()
+                   operation as the counters above.
+                ------------------------------------------ */
+
+                historyEntry.statisticsRecorded =
+                    true;
+
+
+                historyEntry.statisticsRecordedAt =
+                    new Date()
+                        .toISOString();
+
+
+                data.history[
+                    historyIndex
+                ] =
+                    historyEntry;
+
+
+                result = {
                     success: true,
 
                     recorded: true,
@@ -744,13 +1093,38 @@ function recordSettlement(
     }
 
 
+    if (!result) {
+        return {
+            success: false,
+
+            recorded: false,
+
+            reason:
+                "UNKNOWN_STATISTICS_ERROR"
+        };
+    }
+
+
+    /* -----------------------------------------------------
+       If the atomic callback rejected the operation,
+       respect that result.
+    ----------------------------------------------------- */
+
+    if (!result.success) {
+        return result;
+    }
+
+
+    /* -----------------------------------------------------
+       Cache even duplicate persistent results.
+    ----------------------------------------------------- */
+
     processedRoundIds.add(
         roundId
     );
 
 
     if (
-        result &&
         result.recorded
     ) {
         notifyStatisticsListeners(
@@ -768,8 +1142,8 @@ function recordSettlement(
 /* =========================================================
    DERIVED STATISTICS
 
-   These values are calculated from the persistent raw
-   counters and do not need to be saved separately.
+   These values are calculated dynamically instead of being
+   stored, preventing unnecessary duplicate state.
 ========================================================= */
 
 function calculateDerivedStatistics(
@@ -785,7 +1159,9 @@ function calculateDerivedStatistics(
     /* -----------------------------------------------------
        Net profit
 
-       gross profit - gross loss
+       gross winning profit
+       -
+       gross losses
     ----------------------------------------------------- */
 
     const netProfit =
@@ -799,7 +1175,9 @@ function calculateDerivedStatistics(
 
 
     /* -----------------------------------------------------
-       Win / loss rate
+       Win Rate
+
+       successful Cash Outs / valid bets
     ----------------------------------------------------- */
 
     const winRate =
@@ -807,24 +1185,29 @@ function calculateDerivedStatistics(
             ? (
                 stats.cashoutCount /
                 stats.totalBets
-            ) * 100
+            ) *
+            100
             : 0;
 
+
+    /* -----------------------------------------------------
+       Loss Rate
+    ----------------------------------------------------- */
 
     const lossRate =
         stats.totalBets > 0
             ? (
                 stats.crashLossCount /
                 stats.totalBets
-            ) * 100
+            ) *
+            100
             : 0;
 
 
     /* -----------------------------------------------------
-       Participation rate
+       Participation Rate
 
-       Percentage of completed rounds in which the player
-       actually had a valid bet.
+       valid wagered rounds / all completed rounds
     ----------------------------------------------------- */
 
     const participationRate =
@@ -832,12 +1215,13 @@ function calculateDerivedStatistics(
             ? (
                 stats.totalBets /
                 stats.totalRounds
-            ) * 100
+            ) *
+            100
             : 0;
 
 
     /* -----------------------------------------------------
-       Average bet
+       Average Bet
     ----------------------------------------------------- */
 
     const averageBet =
@@ -850,7 +1234,7 @@ function calculateDerivedStatistics(
 
 
     /* -----------------------------------------------------
-       Average returned amount per valid bet
+       Average Returned Amount Per Valid Bet
     ----------------------------------------------------- */
 
     const averageReturn =
@@ -863,7 +1247,7 @@ function calculateDerivedStatistics(
 
 
     /* -----------------------------------------------------
-       Average net result per bet
+       Average Net Profit Per Bet
     ----------------------------------------------------- */
 
     const averageProfitPerBet =
@@ -876,11 +1260,9 @@ function calculateDerivedStatistics(
 
 
     /* -----------------------------------------------------
-       Return ratio
+       Return Rate / RTP experienced by this local player
 
-       totalReturned / totalWagered
-
-       Expressed as percentage.
+       total returned / total wagered
     ----------------------------------------------------- */
 
     const returnRate =
@@ -888,7 +1270,8 @@ function calculateDerivedStatistics(
             ? (
                 stats.totalReturned /
                 stats.totalWagered
-            ) * 100
+            ) *
+            100
             : 0;
 
 
@@ -948,9 +1331,7 @@ function calculateDerivedStatistics(
 /* =========================================================
    STATISTICS SUMMARY
 
-   Combines stored counters and derived values.
-
-   Ideal for UI consumption.
+   Combines persistent raw counters and calculated values.
 ========================================================= */
 
 function getStatisticsSummary() {
@@ -972,117 +1353,7 @@ function getStatisticsSummary() {
 
 
 /* =========================================================
-   RESET STATISTICS
-
-   Intended for development or a future explicit reset
-   function.
-
-   Does NOT:
-   - reset wallet
-   - reset login
-   - delete history
-========================================================= */
-
-function resetStatistics() {
-    const previous =
-        getStatistics();
-
-
-    let result = null;
-
-
-    const savedData =
-        updateData(
-            (data) => {
-
-                data.statistics = {
-                    ...DEFAULT_STATISTICS
-                };
-
-
-                result = {
-                    success: true,
-
-                    previous,
-
-                    statistics:
-                        clone(
-                            data.statistics
-                        )
-                };
-            }
-        );
-
-
-    if (!savedData) {
-        return {
-            success: false,
-
-            reason:
-                "STORAGE_WRITE_FAILED"
-        };
-    }
-
-
-    processedRoundIds.clear();
-
-
-    notifyStatisticsListeners(
-        previous,
-        result.statistics,
-        null
-    );
-
-
-    return result;
-}
-
-
-/* =========================================================
-   GET PLAYER PERFORMANCE CATEGORY
-
-   Purely descriptive UI helper.
-
-   This is not used for gameplay decisions.
-========================================================= */
-
-function getPerformanceCategory(
-    statistics =
-        getStatistics()
-) {
-    const derived =
-        calculateDerivedStatistics(
-            statistics
-        );
-
-
-    if (
-        statistics.totalBets === 0
-    ) {
-        return "NO_DATA";
-    }
-
-
-    if (
-        derived.netProfit > 0
-    ) {
-        return "PROFIT";
-    }
-
-
-    if (
-        derived.netProfit < 0
-    ) {
-        return "LOSS";
-    }
-
-
-    return "EVEN";
-}
-
-
-/* =========================================================
-   GET WIN/LOSS COUNTS
+   GET WIN / LOSS SUMMARY
 ========================================================= */
 
 function getWinLossSummary() {
@@ -1108,12 +1379,655 @@ function getWinLossSummary() {
 
 
 /* =========================================================
+   PERFORMANCE CATEGORY
+
+   Descriptive UI helper only.
+========================================================= */
+
+function getPerformanceCategory(
+    statistics =
+        getStatistics()
+) {
+    const stats =
+        sanitizeStatistics(
+            statistics
+        );
+
+
+    if (
+        stats.totalBets === 0
+    ) {
+        return "NO_DATA";
+    }
+
+
+    const derived =
+        calculateDerivedStatistics(
+            stats
+        );
+
+
+    if (
+        derived.netProfit > 0
+    ) {
+        return "PROFIT";
+    }
+
+
+    if (
+        derived.netProfit < 0
+    ) {
+        return "LOSS";
+    }
+
+
+    return "EVEN";
+}
+
+
+/* =========================================================
+   INITIALIZE SESSION CACHE
+
+   Load all persistently marked History rounds into the
+   in-memory Set.
+
+   This is only an optimization.
+========================================================= */
+
+function initializeProcessedRoundCache() {
+    const data =
+        getData();
+
+
+    if (
+        !Array.isArray(
+            data.history
+        )
+    ) {
+        return;
+    }
+
+
+    for (
+        const entry
+        of data.history
+    ) {
+        if (
+            entry &&
+            typeof entry.roundId ===
+                "string" &&
+            entry.statisticsRecorded ===
+                true
+        ) {
+            processedRoundIds.add(
+                entry.roundId
+            );
+        }
+    }
+}
+
+
+/* =========================================================
+   MIGRATE LEGACY HISTORY MARKERS
+
+   Previous statistics.js versions could already have
+   updated aggregate statistics while History entries did
+   not yet have statisticsRecorded.
+
+   If aggregate statistics already contain completed rounds,
+   treat existing legacy History entries as previously
+   counted rather than risking double counting after upgrade.
+
+   This is a one-time compatibility repair.
+========================================================= */
+
+function migrateLegacyStatisticsMarkers() {
+    const data =
+        getData();
+
+
+    if (
+        !Array.isArray(
+            data.history
+        ) ||
+        data.history.length === 0
+    ) {
+        return {
+            success: true,
+
+            changed: false
+        };
+    }
+
+
+    const statistics =
+        sanitizeStatistics(
+            data.statistics
+        );
+
+
+    /*
+     If no statistics have ever been counted, do not mark
+     legacy History entries automatically.
+    */
+
+    if (
+        statistics.totalRounds === 0
+    ) {
+        return {
+            success: true,
+
+            changed: false
+        };
+    }
+
+
+    const unmarkedEntries =
+        data.history.filter(
+            (entry) =>
+                entry &&
+                entry.statisticsRecorded !==
+                    true
+        );
+
+
+    if (
+        unmarkedEntries.length === 0
+    ) {
+        return {
+            success: true,
+
+            changed: false
+        };
+    }
+
+
+    /*
+     Compatibility assumption:
+
+     Previous versions automatically wrote Statistics and
+     History from the same SETTLEMENT_COMPLETE event.
+
+     Therefore an existing legacy History entry is assumed
+     to already be represented in the aggregate counters.
+
+     This prevents an upgrade from double-counting old
+     rounds.
+    */
+
+    const savedData =
+        updateData(
+            (workingData) => {
+
+                if (
+                    !Array.isArray(
+                        workingData.history
+                    )
+                ) {
+                    return;
+                }
+
+
+                for (
+                    const entry
+                    of workingData.history
+                ) {
+                    if (
+                        !entry ||
+                        typeof entry.roundId !==
+                            "string"
+                    ) {
+                        continue;
+                    }
+
+
+                    if (
+                        entry.statisticsRecorded ===
+                        true
+                    ) {
+                        continue;
+                    }
+
+
+                    entry.statisticsRecorded =
+                        true;
+
+
+                    entry.statisticsRecordedAt =
+                        entry.recordedAt ??
+                        new Date()
+                            .toISOString();
+                }
+            }
+        );
+
+
+    return {
+        success:
+            Boolean(
+                savedData
+            ),
+
+        changed:
+            Boolean(
+                savedData
+            )
+    };
+}
+
+
+/* =========================================================
+   RESET STATISTICS
+
+   Resets aggregate statistics only.
+
+   History remains intact.
+
+   Existing History entries remain marked as processed so
+   old settlements cannot accidentally repopulate statistics
+   merely through duplicate events.
+
+   New future rounds will still be counted normally.
+========================================================= */
+
+function resetStatistics() {
+    const previous =
+        getStatistics();
+
+
+    const savedData =
+        updateData(
+            (data) => {
+
+                data.statistics = {
+                    ...DEFAULT_STATISTICS
+                };
+            }
+        );
+
+
+    if (!savedData) {
+        return {
+            success: false,
+
+            reason:
+                "STORAGE_WRITE_FAILED"
+        };
+    }
+
+
+    /*
+     Do NOT remove persistent history markers.
+     Otherwise old rounds could be counted again.
+    */
+
+    processedRoundIds.clear();
+
+
+    initializeProcessedRoundCache();
+
+
+    const statistics =
+        getStatistics();
+
+
+    notifyStatisticsListeners(
+        previous,
+        statistics,
+        null
+    );
+
+
+    return {
+        success: true,
+
+        previous,
+
+        statistics
+    };
+}
+
+
+/* =========================================================
+   REBUILD STATISTICS FROM HISTORY
+
+   Development / repair utility.
+
+   Unlike resetStatistics(), this intentionally recalculates
+   everything from saved History records.
+
+   Useful when:
+   - statistics data is damaged
+   - a future statistics schema changes
+   - derived persistent fields are added
+========================================================= */
+
+function rebuildStatisticsFromHistory() {
+    const data =
+        getData();
+
+
+    const history =
+        Array.isArray(
+            data.history
+        )
+            ? clone(
+                data.history
+            )
+            : [];
+
+
+    const previous =
+        getStatistics();
+
+
+    let rebuilt = {
+        ...DEFAULT_STATISTICS
+    };
+
+
+    for (
+        const entry
+        of history
+    ) {
+        const settlement =
+            entry?.settlement;
+
+
+        const validation =
+            validateSettlement(
+                settlement
+            );
+
+
+        if (!validation.valid) {
+            continue;
+        }
+
+
+        /* -------------------------------------------------
+           Round
+        -------------------------------------------------- */
+
+        rebuilt.totalRounds +=
+            1;
+
+
+        const crashMultiplier =
+            normalizeNonNegativeNumber(
+                settlement
+                    .crashMultiplier
+            );
+
+
+        rebuilt.highestCrashMultiplier =
+            Math.max(
+                rebuilt
+                    .highestCrashMultiplier,
+
+                crashMultiplier
+            );
+
+
+        /* -------------------------------------------------
+           Valid bet
+        -------------------------------------------------- */
+
+        if (
+            !isValidBetResult(
+                settlement.result
+            )
+        ) {
+            continue;
+        }
+
+
+        const wagered =
+            normalizeNonNegativeNumber(
+                settlement
+                    .financial
+                    .wagered
+            );
+
+
+        const returned =
+            normalizeNonNegativeNumber(
+                settlement
+                    .financial
+                    .returned
+            );
+
+
+        const profit =
+            normalizeNumber(
+                settlement
+                    .financial
+                    .profit
+            );
+
+
+        rebuilt.totalBets +=
+            1;
+
+
+        rebuilt.totalWagered =
+            roundTo(
+                rebuilt.totalWagered +
+                wagered,
+
+                STATISTICS_CONFIG
+                    .DECIMALS
+            );
+
+
+        rebuilt.totalReturned =
+            roundTo(
+                rebuilt.totalReturned +
+                returned,
+
+                STATISTICS_CONFIG
+                    .DECIMALS
+            );
+
+
+        /* -------------------------------------------------
+           WIN
+        -------------------------------------------------- */
+
+        if (
+            settlement.result ===
+            ROUND_RESULT.WIN
+        ) {
+            rebuilt.cashoutCount +=
+                1;
+
+
+            if (
+                profit > 0
+            ) {
+                rebuilt.totalProfit =
+                    roundTo(
+                        rebuilt.totalProfit +
+                        profit,
+
+                        STATISTICS_CONFIG
+                            .DECIMALS
+                    );
+
+
+                rebuilt.highestSingleWin =
+                    Math.max(
+                        rebuilt
+                            .highestSingleWin,
+
+                        profit
+                    );
+            }
+
+
+            const cashoutMultiplier =
+                normalizeNonNegativeNumber(
+                    settlement
+                        .cashout
+                        ?.multiplier
+                );
+
+
+            rebuilt.highestCashoutMultiplier =
+                Math.max(
+                    rebuilt
+                        .highestCashoutMultiplier,
+
+                    cashoutMultiplier
+                );
+        }
+
+
+        /* -------------------------------------------------
+           LOSS
+        -------------------------------------------------- */
+
+        if (
+            settlement.result ===
+            ROUND_RESULT.LOSS
+        ) {
+            rebuilt.crashLossCount +=
+                1;
+
+
+            if (
+                profit < 0
+            ) {
+                rebuilt.totalLoss =
+                    roundTo(
+                        rebuilt.totalLoss +
+                        Math.abs(
+                            profit
+                        ),
+
+                        STATISTICS_CONFIG
+                            .DECIMALS
+                    );
+            }
+        }
+    }
+
+
+    rebuilt =
+        sanitizeStatistics(
+            rebuilt
+        );
+
+
+    const savedData =
+        updateData(
+            (workingData) => {
+
+                workingData.statistics =
+                    clone(
+                        rebuilt
+                    );
+
+
+                if (
+                    !Array.isArray(
+                        workingData.history
+                    )
+                ) {
+                    workingData.history =
+                        [];
+
+                    return;
+                }
+
+
+                /*
+                 Every valid History settlement has now been
+                 accounted for by this rebuild.
+                */
+
+                for (
+                    const entry
+                    of workingData.history
+                ) {
+                    if (
+                        !entry ||
+                        !entry.settlement
+                    ) {
+                        continue;
+                    }
+
+
+                    const validation =
+                        validateSettlement(
+                            entry.settlement
+                        );
+
+
+                    if (!validation.valid) {
+                        continue;
+                    }
+
+
+                    entry.statisticsRecorded =
+                        true;
+
+
+                    entry.statisticsRecordedAt =
+                        new Date()
+                            .toISOString();
+                }
+            }
+        );
+
+
+    if (!savedData) {
+        return {
+            success: false,
+
+            reason:
+                "STORAGE_WRITE_FAILED"
+        };
+    }
+
+
+    processedRoundIds.clear();
+
+
+    initializeProcessedRoundCache();
+
+
+    notifyStatisticsListeners(
+        previous,
+        rebuilt,
+        null
+    );
+
+
+    return {
+        success: true,
+
+        previous,
+
+        statistics:
+            clone(
+                rebuilt
+            ),
+
+        historyEntries:
+            history.length
+    };
+}
+
+
+/* =========================================================
    AUTO RECORD SETTLEMENT
 
-   settlement.js emits SETTLEMENT_COMPLETE after the final
-   round state has been normalized.
+   settlement.js emits SETTLEMENT_COMPLETE after the round
+   has fully transitioned to ENDED.
 
-   Statistics are therefore updated automatically.
+   recordSettlement() itself ensures History exists and is
+   persistently deduplicated.
 ========================================================= */
 
 subscribeToSettlement(
@@ -1127,13 +2041,9 @@ subscribeToSettlement(
         }
 
 
-        const settlement =
-            event.settlement;
-
-
         const result =
             recordSettlement(
-                settlement
+                event.settlement
             );
 
 
@@ -1145,6 +2055,25 @@ subscribeToSettlement(
         }
     }
 );
+
+
+/* =========================================================
+   MODULE INITIALIZATION
+========================================================= */
+
+/*
+ First upgrade old History entries so already-counted rounds
+ cannot become duplicates after adopting persistent markers.
+*/
+
+migrateLegacyStatisticsMarkers();
+
+
+/*
+ Then populate the optional session cache.
+*/
+
+initializeProcessedRoundCache();
 
 
 /* =========================================================
@@ -1162,10 +2091,13 @@ export {
 
     recordSettlement,
 
+    hasPersistentStatisticsRecord,
+
     getWinLossSummary,
     getPerformanceCategory,
 
     resetStatistics,
+    rebuildStatisticsFromHistory,
 
     subscribeToStatistics
 };
