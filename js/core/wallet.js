@@ -2,216 +2,285 @@
    CG FLIGHT
    js/core/wallet.js
 
-   Wallet domain layer.
+   Persistent virtual coin wallet.
 
    Responsibilities:
-   - Read current balance
+   - Read player balance
    - Credit coins
    - Debit coins
-   - Validate wallet operations
-   - Record wallet transactions
-   - Handle first-login 10,000 coin bonus
-   - Provide balance / transaction helpers
+   - Validate available balance
+   - Track lifetime credited / debited totals
+   - Publish wallet change events
+   - Provide formatted coin values
 
    IMPORTANT:
-   Daily login rewards are NOT handled here.
-   Login streak logic will call wallet credit functions later.
+   This module does NOT:
+   - Decide login rewards
+   - Decide bet validity
+   - Decide Cash Out multiplier
+   - Perform settlement logic
+
+   Other modules decide WHY money moves.
+   wallet.js only performs the balance movement.
 ========================================================= */
+
 
 import {
     getData,
     updateData
 } from "./storage.js";
 
+import {
+    roundTo,
+    formatCoins as formatCoinValue,
+    clone,
+    isFiniteNumber,
+    createId
+} from "./utils.js";
+
 
 /* =========================================================
    WALLET CONFIG
 ========================================================= */
 
-const FIRST_LOGIN_BONUS = 10000;
+const WALLET_CONFIG = Object.freeze({
 
-const MAX_TRANSACTION_HISTORY = 500;
+    DECIMALS:
+        2,
+
+    MIN_BALANCE:
+        0
+});
 
 
 /* =========================================================
    TRANSACTION TYPES
 
-   Keep these centralized so later modules do not invent
-   inconsistent string values.
+   These are descriptive labels only.
+
+   wallet.js does not interpret their business meaning.
 ========================================================= */
 
-const WALLET_TRANSACTION_TYPES = Object.freeze({
-    INITIAL_BONUS: "INITIAL_BONUS",
-    DAILY_LOGIN: "DAILY_LOGIN",
-    STREAK_BONUS: "STREAK_BONUS",
+const WALLET_TRANSACTION_TYPES =
+    Object.freeze({
 
-    BET: "BET",
-    BET_REFUND: "BET_REFUND",
+        INITIAL_BONUS:
+            "INITIAL_BONUS",
 
-    CASHOUT: "CASHOUT",
-    AUTO_CASHOUT: "AUTO_CASHOUT",
+        DAILY_LOGIN:
+            "DAILY_LOGIN",
 
-    SYSTEM_ADJUSTMENT: "SYSTEM_ADJUSTMENT"
-});
+        LOGIN_STREAK_BONUS:
+            "LOGIN_STREAK_BONUS",
+
+        BET:
+            "BET",
+
+        BET_REFUND:
+            "BET_REFUND",
+
+        CASHOUT:
+            "CASHOUT",
+
+        SETTLEMENT_REFUND:
+            "SETTLEMENT_REFUND",
+
+        MANUAL:
+            "MANUAL"
+    });
 
 
 /* =========================================================
-   VALUE HELPERS
+   WALLET LISTENERS
 ========================================================= */
 
-function isFiniteNumber(value) {
-    return (
-        typeof value === "number" &&
-        Number.isFinite(value)
+const walletListeners =
+    new Set();
+
+
+function subscribeToWallet(
+    listener
+) {
+    if (
+        typeof listener !==
+        "function"
+    ) {
+        throw new TypeError(
+            "[CG Flight] Wallet listener must be a function."
+        );
+    }
+
+
+    walletListeners.add(
+        listener
     );
+
+
+    return function unsubscribe() {
+
+        walletListeners.delete(
+            listener
+        );
+    };
 }
 
 
-function isPositiveAmount(value) {
-    return (
-        isFiniteNumber(value) &&
-        value > 0
-    );
+/* =========================================================
+   NOTIFY WALLET LISTENERS
+========================================================= */
+
+function notifyWalletListeners(
+    event
+) {
+    const payload = {
+        ...clone(event),
+
+        timestamp:
+            event.timestamp ??
+            Date.now()
+    };
+
+
+    for (
+        const listener
+        of walletListeners
+    ) {
+        try {
+
+            listener(
+                payload
+            );
+
+        } catch (error) {
+
+            console.error(
+                "[CG Flight] Wallet listener failed:",
+                error
+            );
+        }
+    }
 }
 
 
-function normalizeAmount(value) {
-    if (!isFiniteNumber(value)) {
+/* =========================================================
+   NORMALIZE AMOUNT
+========================================================= */
+
+function normalizeWalletAmount(
+    amount
+) {
+    const numeric =
+        Number(amount);
+
+
+    if (
+        !Number.isFinite(
+            numeric
+        )
+    ) {
         return null;
     }
+
 
     const normalized =
-        Math.round(
-            (value + Number.EPSILON) * 100
-        ) / 100;
+        roundTo(
+            numeric,
+            WALLET_CONFIG.DECIMALS
+        );
 
-    if (normalized <= 0) {
+
+    if (
+        normalized <= 0
+    ) {
         return null;
     }
+
 
     return normalized;
 }
 
 
 /* =========================================================
-   TRANSACTION ID
+   NORMALIZE BALANCE
 ========================================================= */
 
-function createTransactionId() {
-    if (
-        typeof crypto !== "undefined" &&
-        typeof crypto.randomUUID === "function"
-    ) {
-        return crypto.randomUUID();
-    }
-
-    return [
-        "tx",
-        Date.now(),
-        Math.random()
-            .toString(36)
-            .slice(2, 10)
-    ].join("-");
-}
-
-
-/* =========================================================
-   WALLET STRUCTURE REPAIR
-
-   storage.js currently defines wallet.balance only.
-   wallet.js extends the wallet structure safely with:
-   - transactions
-   - firstLoginBonusClaimed
-
-   This allows the data schema to remain compatible with
-   existing version-1 player data.
-========================================================= */
-
-function ensureWalletStructure(data) {
-    if (
-        !data.wallet ||
-        typeof data.wallet !== "object" ||
-        Array.isArray(data.wallet)
-    ) {
-        data.wallet = {};
-    }
-
-    if (
-        !isFiniteNumber(data.wallet.balance) ||
-        data.wallet.balance < 0
-    ) {
-        data.wallet.balance = 0;
-    }
-
-    if (!Array.isArray(data.wallet.transactions)) {
-        data.wallet.transactions = [];
-    }
-
-    if (
-        typeof data.wallet.firstLoginBonusClaimed !==
-        "boolean"
-    ) {
-        data.wallet.firstLoginBonusClaimed = false;
-    }
-
-    return data.wallet;
-}
-
-
-/* =========================================================
-   TRANSACTION RECORD
-========================================================= */
-
-function createTransactionRecord({
-    type,
-    amount,
-    direction,
-    balanceBefore,
-    balanceAfter,
-    metadata = null
-}) {
-    return {
-        id: createTransactionId(),
-
-        type,
-
-        direction,
-
-        amount,
-
-        balanceBefore,
-
-        balanceAfter,
-
-        createdAt:
-            new Date().toISOString(),
-
-        metadata
-    };
-}
-
-
-/* =========================================================
-   STORE TRANSACTION
-========================================================= */
-
-function appendTransaction(
-    wallet,
-    transaction
+function normalizeBalance(
+    balance
 ) {
-    wallet.transactions.push(
-        transaction
-    );
+    const numeric =
+        Number(balance);
+
 
     if (
-        wallet.transactions.length >
-        MAX_TRANSACTION_HISTORY
+        !Number.isFinite(
+            numeric
+        )
     ) {
-        wallet.transactions =
-            wallet.transactions.slice(
-                -MAX_TRANSACTION_HISTORY
-            );
+        return 0;
     }
+
+
+    return Math.max(
+        WALLET_CONFIG.MIN_BALANCE,
+
+        roundTo(
+            numeric,
+            WALLET_CONFIG.DECIMALS
+        )
+    );
+}
+
+
+/* =========================================================
+   GET WALLET
+========================================================= */
+
+function getWallet() {
+    const data =
+        getData();
+
+
+    const wallet =
+        data.wallet ?? {};
+
+
+    return {
+
+        balance:
+            normalizeBalance(
+                wallet.balance
+            ),
+
+        totalCredited:
+            Math.max(
+                0,
+
+                roundTo(
+                    Number(
+                        wallet.totalCredited
+                    ) || 0,
+
+                    WALLET_CONFIG.DECIMALS
+                )
+            ),
+
+        totalDebited:
+            Math.max(
+                0,
+
+                roundTo(
+                    Number(
+                        wallet.totalDebited
+                    ) || 0,
+
+                    WALLET_CONFIG.DECIMALS
+                )
+            ),
+
+        updatedAt:
+            wallet.updatedAt ??
+            null
+    };
 }
 
 
@@ -220,119 +289,230 @@ function appendTransaction(
 ========================================================= */
 
 function getBalance() {
-    const data =
-        getData();
-
-    const wallet =
-        ensureWalletStructure(data);
-
-    return wallet.balance;
+    return getWallet()
+        .balance;
 }
 
 
 /* =========================================================
-   CHECK AFFORDABILITY
+   HAS BALANCE
 ========================================================= */
 
-function canAfford(amount) {
-    const normalized =
-        normalizeAmount(amount);
+function hasBalance(
+    amount
+) {
+    const normalizedAmount =
+        normalizeWalletAmount(
+            amount
+        );
 
-    if (normalized === null) {
+
+    if (
+        normalizedAmount ===
+        null
+    ) {
         return false;
     }
 
-    return getBalance() >= normalized;
+
+    return (
+        getBalance() >=
+        normalizedAmount
+    );
 }
 
 
 /* =========================================================
    CREDIT
 
-   Adds coins to the wallet.
+   Adds coins to Wallet.
 
-   Returns:
-   {
-       success,
-       amount,
-       balanceBefore,
-       balanceAfter,
-       transaction
-   }
+   Example:
+       credit(1000, {
+           type: "DAILY_LOGIN"
+       });
 ========================================================= */
 
 function credit(
     amount,
     {
         type =
-            WALLET_TRANSACTION_TYPES.SYSTEM_ADJUSTMENT,
+            WALLET_TRANSACTION_TYPES.MANUAL,
 
-        metadata = null
+        reason =
+            null,
+
+        referenceId =
+            null,
+
+        metadata =
+            null
     } = {}
 ) {
     const normalizedAmount =
-        normalizeAmount(amount);
+        normalizeWalletAmount(
+            amount
+        );
 
-    if (normalizedAmount === null) {
+
+    if (
+        normalizedAmount ===
+        null
+    ) {
         return {
             success: false,
-            reason: "INVALID_AMOUNT"
+
+            reason:
+                "INVALID_AMOUNT"
         };
     }
 
-    let result = null;
 
-    const savedData =
-        updateData((data) => {
-            const wallet =
-                ensureWalletStructure(data);
+    const previousBalance =
+        getBalance();
 
-            const balanceBefore =
-                wallet.balance;
 
-            const balanceAfter =
-                Math.round(
-                    (
-                        balanceBefore +
-                        normalizedAmount
-                    ) * 100
-                ) / 100;
+    const transactionId =
+        createId(
+            "credit"
+        );
 
-            wallet.balance =
-                balanceAfter;
 
-            const transaction =
-                createTransactionRecord({
+    const timestamp =
+        new Date()
+            .toISOString();
+
+
+    let result =
+        null;
+
+
+    const saved =
+        updateData(
+            (data) => {
+
+                if (
+                    !data.wallet ||
+                    typeof data.wallet !==
+                        "object"
+                ) {
+                    data.wallet = {
+                        balance: 0,
+                        totalCredited: 0,
+                        totalDebited: 0,
+                        updatedAt: null
+                    };
+                }
+
+
+                const currentBalance =
+                    normalizeBalance(
+                        data.wallet.balance
+                    );
+
+
+                const currentCredited =
+                    Math.max(
+                        0,
+
+                        Number(
+                            data.wallet
+                                .totalCredited
+                        ) || 0
+                    );
+
+
+                const nextBalance =
+                    roundTo(
+                        currentBalance +
+                        normalizedAmount,
+
+                        WALLET_CONFIG
+                            .DECIMALS
+                    );
+
+
+                const nextTotalCredited =
+                    roundTo(
+                        currentCredited +
+                        normalizedAmount,
+
+                        WALLET_CONFIG
+                            .DECIMALS
+                    );
+
+
+                data.wallet.balance =
+                    nextBalance;
+
+
+                data.wallet.totalCredited =
+                    nextTotalCredited;
+
+
+                data.wallet.updatedAt =
+                    timestamp;
+
+
+                result = {
+
+                    success: true,
+
+                    transactionId,
+
+                    direction:
+                        "CREDIT",
+
                     type,
+
                     amount:
                         normalizedAmount,
-                    direction: "CREDIT",
-                    balanceBefore,
-                    balanceAfter,
-                    metadata
-                });
 
-            appendTransaction(
-                wallet,
-                transaction
-            );
+                    previousBalance:
+                        currentBalance,
 
-            result = {
-                success: true,
-                amount:
-                    normalizedAmount,
-                balanceBefore,
-                balanceAfter,
-                transaction
-            };
-        });
+                    balance:
+                        nextBalance,
 
-    if (!savedData) {
+                    reason,
+
+                    referenceId,
+
+                    metadata:
+                        metadata
+                            ? clone(metadata)
+                            : null,
+
+                    timestamp
+                };
+            }
+        );
+
+
+    if (!saved) {
         return {
             success: false,
-            reason: "STORAGE_WRITE_FAILED"
+
+            reason:
+                "STORAGE_WRITE_FAILED"
         };
     }
+
+
+    if (!result) {
+        return {
+            success: false,
+
+            reason:
+                "UNKNOWN_WALLET_ERROR"
+        };
+    }
+
+
+    notifyWalletListeners(
+        result
+    );
+
 
     return result;
 }
@@ -341,447 +521,759 @@ function credit(
 /* =========================================================
    DEBIT
 
-   Removes coins from the wallet.
+   Removes coins from Wallet.
 
-   Prevents:
-   - invalid amounts
-   - negative balances
-   - insufficient balance
+   Balance can NEVER become negative.
 ========================================================= */
 
 function debit(
     amount,
     {
         type =
-            WALLET_TRANSACTION_TYPES.SYSTEM_ADJUSTMENT,
+            WALLET_TRANSACTION_TYPES.MANUAL,
 
-        metadata = null
+        reason =
+            null,
+
+        referenceId =
+            null,
+
+        metadata =
+            null
     } = {}
 ) {
     const normalizedAmount =
-        normalizeAmount(amount);
+        normalizeWalletAmount(
+            amount
+        );
 
-    if (normalizedAmount === null) {
-        return {
-            success: false,
-            reason: "INVALID_AMOUNT"
-        };
-    }
-
-    const currentBalance =
-        getBalance();
 
     if (
-        currentBalance <
-        normalizedAmount
+        normalizedAmount ===
+        null
     ) {
         return {
             success: false,
+
             reason:
-                "INSUFFICIENT_BALANCE",
-            requestedAmount:
-                normalizedAmount,
-            balance:
-                currentBalance
+                "INVALID_AMOUNT"
         };
     }
 
-    let result = null;
 
-    const savedData =
-        updateData((data) => {
-            const wallet =
-                ensureWalletStructure(data);
+    const transactionId =
+        createId(
+            "debit"
+        );
 
-            /*
-             Re-check balance inside the update operation.
 
-             This avoids trusting the earlier snapshot.
-            */
+    const timestamp =
+        new Date()
+            .toISOString();
 
-            if (
-                wallet.balance <
-                normalizedAmount
-            ) {
-                result = {
-                    success: false,
-                    reason:
-                        "INSUFFICIENT_BALANCE",
-                    requestedAmount:
+
+    let result =
+        null;
+
+
+    const saved =
+        updateData(
+            (data) => {
+
+                if (
+                    !data.wallet ||
+                    typeof data.wallet !==
+                        "object"
+                ) {
+                    data.wallet = {
+                        balance: 0,
+                        totalCredited: 0,
+                        totalDebited: 0,
+                        updatedAt: null
+                    };
+                }
+
+
+                const currentBalance =
+                    normalizeBalance(
+                        data.wallet.balance
+                    );
+
+
+                /* -----------------------------------------
+                   Insufficient Balance
+
+                   IMPORTANT:
+                   No Wallet fields are modified.
+                ------------------------------------------ */
+
+                if (
+                    currentBalance <
+                    normalizedAmount
+                ) {
+                    result = {
+
+                        success: false,
+
+                        reason:
+                            "INSUFFICIENT_BALANCE",
+
+                        required:
+                            normalizedAmount,
+
+                        balance:
+                            currentBalance,
+
+                        shortage:
+                            roundTo(
+                                normalizedAmount -
+                                currentBalance,
+
+                                WALLET_CONFIG
+                                    .DECIMALS
+                            )
+                    };
+
+
+                    return;
+                }
+
+
+                const currentDebited =
+                    Math.max(
+                        0,
+
+                        Number(
+                            data.wallet
+                                .totalDebited
+                        ) || 0
+                    );
+
+
+                const nextBalance =
+                    roundTo(
+                        currentBalance -
                         normalizedAmount,
-                    balance:
-                        wallet.balance
-                };
 
-                return;
-            }
+                        WALLET_CONFIG
+                            .DECIMALS
+                    );
 
-            const balanceBefore =
-                wallet.balance;
 
-            const balanceAfter =
-                Math.round(
-                    (
-                        balanceBefore -
-                        normalizedAmount
-                    ) * 100
-                ) / 100;
-
-            wallet.balance =
-                Math.max(
-                    0,
-                    balanceAfter
-                );
-
-            const transaction =
-                createTransactionRecord({
-                    type,
-                    amount:
+                const nextTotalDebited =
+                    roundTo(
+                        currentDebited +
                         normalizedAmount,
-                    direction: "DEBIT",
-                    balanceBefore,
-                    balanceAfter:
-                        wallet.balance,
-                    metadata
-                });
 
-            appendTransaction(
-                wallet,
-                transaction
-            );
-
-            result = {
-                success: true,
-                amount:
-                    normalizedAmount,
-                balanceBefore,
-                balanceAfter:
-                    wallet.balance,
-                transaction
-            };
-        });
-
-    if (!savedData) {
-        return {
-            success: false,
-            reason:
-                "STORAGE_WRITE_FAILED"
-        };
-    }
-
-    return result;
-}
+                        WALLET_CONFIG
+                            .DECIMALS
+                    );
 
 
-/* =========================================================
-   FIRST LOGIN BONUS
+                data.wallet.balance =
+                    Math.max(
+                        WALLET_CONFIG
+                            .MIN_BALANCE,
 
-   Rules:
-   - Award exactly once per local player data
-   - +10,000 coins
-   - Independent from daily login reward
+                        nextBalance
+                    );
 
-   Therefore:
-   First-ever login later becomes:
 
-   10,000 initial bonus
-   +1,000 daily login
-   =11,000 total
-========================================================= */
+                data.wallet.totalDebited =
+                    nextTotalDebited;
 
-function claimFirstLoginBonus() {
-    let result = null;
 
-    const savedData =
-        updateData((data) => {
-            const wallet =
-                ensureWalletStructure(data);
+                data.wallet.updatedAt =
+                    timestamp;
 
-            if (
-                wallet.firstLoginBonusClaimed
-            ) {
+
                 result = {
-                    success: false,
-                    claimed: false,
-                    reason:
-                        "ALREADY_CLAIMED",
-                    amount: 0,
-                    balance:
-                        wallet.balance
-                };
 
-                return;
-            }
+                    success: true,
 
-            const balanceBefore =
-                wallet.balance;
-
-            const balanceAfter =
-                Math.round(
-                    (
-                        balanceBefore +
-                        FIRST_LOGIN_BONUS
-                    ) * 100
-                ) / 100;
-
-            wallet.balance =
-                balanceAfter;
-
-            wallet.firstLoginBonusClaimed =
-                true;
-
-            const transaction =
-                createTransactionRecord({
-                    type:
-                        WALLET_TRANSACTION_TYPES
-                            .INITIAL_BONUS,
-
-                    amount:
-                        FIRST_LOGIN_BONUS,
+                    transactionId,
 
                     direction:
-                        "CREDIT",
+                        "DEBIT",
 
-                    balanceBefore,
+                    type,
 
-                    balanceAfter,
+                    amount:
+                        normalizedAmount,
 
-                    metadata: {
-                        source:
-                            "FIRST_LOGIN"
-                    }
-                });
+                    previousBalance:
+                        currentBalance,
 
-            appendTransaction(
-                wallet,
-                transaction
-            );
+                    balance:
+                        data.wallet.balance,
 
-            result = {
-                success: true,
-                claimed: true,
+                    reason,
 
-                amount:
-                    FIRST_LOGIN_BONUS,
+                    referenceId,
 
-                balanceBefore,
+                    metadata:
+                        metadata
+                            ? clone(metadata)
+                            : null,
 
-                balanceAfter,
+                    timestamp
+                };
+            }
+        );
 
-                transaction
-            };
-        });
 
-    if (!savedData) {
+    if (!saved) {
         return {
             success: false,
-            claimed: false,
+
             reason:
                 "STORAGE_WRITE_FAILED"
         };
     }
+
+
+    if (!result) {
+        return {
+            success: false,
+
+            reason:
+                "UNKNOWN_WALLET_ERROR"
+        };
+    }
+
+
+    /*
+     Insufficient balance is a valid business failure,
+     therefore updateData() may still have returned a saved
+     root object without any Wallet mutation.
+
+     No wallet event should fire.
+    */
+
+    if (!result.success) {
+        return result;
+    }
+
+
+    notifyWalletListeners(
+        result
+    );
+
 
     return result;
 }
 
 
 /* =========================================================
-   CHECK FIRST LOGIN BONUS
+   ADD BALANCE
+
+   Compatibility alias for older modules.
+
+   Prefer credit() in new code.
 ========================================================= */
 
-function hasClaimedFirstLoginBonus() {
-    const data =
-        getData();
-
-    const wallet =
-        ensureWalletStructure(data);
-
-    return (
-        wallet.firstLoginBonusClaimed ===
-        true
-    );
-}
-
-
-/* =========================================================
-   GET TRANSACTIONS
-========================================================= */
-
-function getTransactions({
-    limit = null,
-    type = null,
-    direction = null
-} = {}) {
-    const data =
-        getData();
-
-    const wallet =
-        ensureWalletStructure(data);
-
-    let transactions =
-        [...wallet.transactions];
-
-
-    /* Newest first */
-
-    transactions.reverse();
-
-
-    if (type !== null) {
-        transactions =
-            transactions.filter(
-                (transaction) =>
-                    transaction.type === type
-            );
-    }
-
-
-    if (direction !== null) {
-        transactions =
-            transactions.filter(
-                (transaction) =>
-                    transaction.direction === direction
-            );
-    }
-
-
-    if (
-        Number.isInteger(limit) &&
-        limit >= 0
-    ) {
-        transactions =
-            transactions.slice(
-                0,
-                limit
-            );
-    }
-
-
-    return transactions;
-}
-
-
-/* =========================================================
-   GET TRANSACTION BY ID
-========================================================= */
-
-function getTransactionById(
-    transactionId
+function addBalance(
+    amount,
+    options = {}
 ) {
-    if (
-        typeof transactionId !== "string" ||
-        transactionId.length === 0
-    ) {
-        return null;
-    }
-
-    const data =
-        getData();
-
-    const wallet =
-        ensureWalletStructure(data);
-
-    return (
-        wallet.transactions.find(
-            (transaction) =>
-                transaction.id ===
-                transactionId
-        ) ?? null
+    return credit(
+        amount,
+        options
     );
 }
 
 
 /* =========================================================
-   WALLET SUMMARY
+   SUBTRACT BALANCE
+
+   Compatibility alias for older modules.
+
+   Prefer debit() in new code.
 ========================================================= */
 
-function getWalletSummary() {
-    const data =
-        getData();
+function subtractBalance(
+    amount,
+    options = {}
+) {
+    return debit(
+        amount,
+        options
+    );
+}
 
-    const wallet =
-        ensureWalletStructure(data);
 
-    let totalCredited = 0;
-    let totalDebited = 0;
+/* =========================================================
+   CREDIT INITIAL BONUS
+========================================================= */
 
-    for (
-        const transaction
-        of wallet.transactions
+function creditInitialBonus(
+    amount
+) {
+    return credit(
+        amount,
+        {
+            type:
+                WALLET_TRANSACTION_TYPES
+                    .INITIAL_BONUS,
+
+            reason:
+                "FIRST_LOCAL_PLAYER_INITIALIZATION"
+        }
+    );
+}
+
+
+/* =========================================================
+   CREDIT DAILY LOGIN
+========================================================= */
+
+function creditDailyLogin(
+    amount,
+    {
+        date = null,
+        cycleDay = null
+    } = {}
+) {
+    return credit(
+        amount,
+        {
+            type:
+                WALLET_TRANSACTION_TYPES
+                    .DAILY_LOGIN,
+
+            reason:
+                "DAILY_LOGIN_REWARD",
+
+            metadata: {
+                date,
+                cycleDay
+            }
+        }
+    );
+}
+
+
+/* =========================================================
+   CREDIT LOGIN STREAK BONUS
+========================================================= */
+
+function creditLoginStreakBonus(
+    amount,
+    {
+        date = null,
+        cycleDay = null
+    } = {}
+) {
+    return credit(
+        amount,
+        {
+            type:
+                WALLET_TRANSACTION_TYPES
+                    .LOGIN_STREAK_BONUS,
+
+            reason:
+                "LOGIN_STREAK_BONUS",
+
+            metadata: {
+                date,
+                cycleDay
+            }
+        }
+    );
+}
+
+
+/* =========================================================
+   PLACE BET DEBIT
+========================================================= */
+
+function debitBet(
+    amount,
+    {
+        roundId = null
+    } = {}
+) {
+    return debit(
+        amount,
+        {
+            type:
+                WALLET_TRANSACTION_TYPES
+                    .BET,
+
+            reason:
+                "BET_PLACED",
+
+            referenceId:
+                roundId,
+
+            metadata: {
+                roundId
+            }
+        }
+    );
+}
+
+
+/* =========================================================
+   REFUND BET
+========================================================= */
+
+function refundBet(
+    amount,
+    {
+        roundId = null,
+        reason =
+            "BET_CANCELLED"
+    } = {}
+) {
+    return credit(
+        amount,
+        {
+            type:
+                WALLET_TRANSACTION_TYPES
+                    .BET_REFUND,
+
+            reason,
+
+            referenceId:
+                roundId,
+
+            metadata: {
+                roundId
+            }
+        }
+    );
+}
+
+
+/* =========================================================
+   CREDIT CASHOUT
+========================================================= */
+
+function creditCashout(
+    amount,
+    {
+        roundId = null,
+        multiplier = null,
+        automatic = false
+    } = {}
+) {
+    return credit(
+        amount,
+        {
+            type:
+                WALLET_TRANSACTION_TYPES
+                    .CASHOUT,
+
+            reason:
+                automatic
+                    ? "AUTO_CASHOUT"
+                    : "MANUAL_CASHOUT",
+
+            referenceId:
+                roundId,
+
+            metadata: {
+                roundId,
+                multiplier,
+                automatic
+            }
+        }
+    );
+}
+
+
+/* =========================================================
+   SETTLEMENT REFUND
+========================================================= */
+
+function creditSettlementRefund(
+    amount,
+    {
+        roundId = null,
+        reason =
+            "ROUND_REFUND"
+    } = {}
+) {
+    return credit(
+        amount,
+        {
+            type:
+                WALLET_TRANSACTION_TYPES
+                    .SETTLEMENT_REFUND,
+
+            reason,
+
+            referenceId:
+                roundId,
+
+            metadata: {
+                roundId
+            }
+        }
+    );
+}
+
+
+/* =========================================================
+   SET BALANCE
+
+   Development / maintenance helper.
+
+   This is intentionally NOT used for normal game money flow.
+
+   Unlike credit/debit:
+   - does not increment totalCredited / totalDebited
+   - directly replaces current balance
+========================================================= */
+
+function setBalance(
+    balance
+) {
+    const numeric =
+        Number(balance);
+
+
+    if (
+        !Number.isFinite(
+            numeric
+        ) ||
+        numeric < 0
     ) {
-        if (
-            !transaction ||
-            !isPositiveAmount(
-                transaction.amount
-            )
-        ) {
-            continue;
-        }
+        return {
+            success: false,
 
-        if (
-            transaction.direction ===
-            "CREDIT"
-        ) {
-            totalCredited +=
-                transaction.amount;
-        }
-
-        if (
-            transaction.direction ===
-            "DEBIT"
-        ) {
-            totalDebited +=
-                transaction.amount;
-        }
+            reason:
+                "INVALID_BALANCE"
+        };
     }
 
-    totalCredited =
-        Math.round(
-            totalCredited * 100
-        ) / 100;
 
-    totalDebited =
-        Math.round(
-            totalDebited * 100
-        ) / 100;
+    const nextBalance =
+        normalizeBalance(
+            numeric
+        );
+
+
+    const previousBalance =
+        getBalance();
+
+
+    const timestamp =
+        new Date()
+            .toISOString();
+
+
+    const saved =
+        updateData(
+            (data) => {
+
+                data.wallet.balance =
+                    nextBalance;
+
+
+                data.wallet.updatedAt =
+                    timestamp;
+            }
+        );
+
+
+    if (!saved) {
+        return {
+            success: false,
+
+            reason:
+                "STORAGE_WRITE_FAILED"
+        };
+    }
+
+
+    const result = {
+
+        success: true,
+
+        transactionId:
+            createId(
+                "wallet-set"
+            ),
+
+        direction:
+            "SET",
+
+        type:
+            WALLET_TRANSACTION_TYPES
+                .MANUAL,
+
+        previousBalance,
+
+        balance:
+            nextBalance,
+
+        timestamp
+    };
+
+
+    notifyWalletListeners(
+        result
+    );
+
+
+    return result;
+}
+
+
+/* =========================================================
+   RESET WALLET
+
+   Development helper.
+
+   Resets:
+   - current balance
+   - total credited
+   - total debited
+========================================================= */
+
+function resetWallet() {
+    const previous =
+        getWallet();
+
+
+    const timestamp =
+        new Date()
+            .toISOString();
+
+
+    const saved =
+        updateData(
+            (data) => {
+
+                data.wallet = {
+
+                    balance:
+                        0,
+
+                    totalCredited:
+                        0,
+
+                    totalDebited:
+                        0,
+
+                    updatedAt:
+                        timestamp
+                };
+            }
+        );
+
+
+    if (!saved) {
+        return {
+            success: false,
+
+            reason:
+                "STORAGE_WRITE_FAILED"
+        };
+    }
+
+
+    const current =
+        getWallet();
+
+
+    notifyWalletListeners({
+
+        transactionId:
+            createId(
+                "wallet-reset"
+            ),
+
+        direction:
+            "RESET",
+
+        type:
+            WALLET_TRANSACTION_TYPES
+                .MANUAL,
+
+        previousBalance:
+            previous.balance,
+
+        balance:
+            current.balance,
+
+        timestamp
+    });
+
 
     return {
-        balance:
-            wallet.balance,
+        success: true,
 
-        firstLoginBonusClaimed:
-            wallet.firstLoginBonusClaimed,
+        previous,
 
-        transactionCount:
-            wallet.transactions.length,
-
-        totalCredited,
-
-        totalDebited
+        wallet:
+            current
     };
 }
 
 
 /* =========================================================
-   FORMAT BALANCE
+   FORMAT COINS
 
-   UI helper only.
+   Public convenience wrapper.
+
+   Existing page modules import formatCoins() from wallet.js,
+   so keep this export for compatibility.
+
+   The actual formatter lives in utils.js.
 ========================================================= */
 
 function formatCoins(
-    amount
+    value
 ) {
-    if (!isFiniteNumber(amount)) {
-        return "0";
-    }
-
-    return amount.toLocaleString(
-        "en-US",
-        {
-            minimumFractionDigits: 0,
-            maximumFractionDigits: 2
-        }
+    return formatCoinValue(
+        value
     );
+}
+
+
+/* =========================================================
+   GET WALLET SUMMARY
+========================================================= */
+
+function getWalletSummary() {
+    const wallet =
+        getWallet();
+
+
+    const netFlow =
+        roundTo(
+            wallet.totalCredited -
+            wallet.totalDebited,
+
+            WALLET_CONFIG
+                .DECIMALS
+        );
+
+
+    return {
+
+        ...wallet,
+
+        netFlow,
+
+        formattedBalance:
+            formatCoins(
+                wallet.balance
+            ),
+
+        formattedTotalCredited:
+            formatCoins(
+                wallet.totalCredited
+            ),
+
+        formattedTotalDebited:
+            formatCoins(
+                wallet.totalDebited
+            )
+    };
 }
 
 
@@ -790,22 +1282,35 @@ function formatCoins(
 ========================================================= */
 
 export {
-    FIRST_LOGIN_BONUS,
-    MAX_TRANSACTION_HISTORY,
+    WALLET_CONFIG,
     WALLET_TRANSACTION_TYPES,
 
+    getWallet,
+    getWalletSummary,
+
     getBalance,
-    canAfford,
+    hasBalance,
 
     credit,
     debit,
 
-    claimFirstLoginBonus,
-    hasClaimedFirstLoginBonus,
+    addBalance,
+    subtractBalance,
 
-    getTransactions,
-    getTransactionById,
-    getWalletSummary,
+    creditInitialBonus,
+    creditDailyLogin,
+    creditLoginStreakBonus,
 
-    formatCoins
+    debitBet,
+    refundBet,
+
+    creditCashout,
+    creditSettlementRefund,
+
+    setBalance,
+    resetWallet,
+
+    formatCoins,
+
+    subscribeToWallet
 };
