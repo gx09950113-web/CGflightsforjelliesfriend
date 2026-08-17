@@ -2,1075 +2,200 @@
    CG FLIGHT
    js/core/storage.js
 
-   Local storage data layer.
-
-   Schema version: 2
+   Persistent Local Storage foundation.
 
    Responsibilities:
-   - Create default local player data
-   - Read local player data
-   - Write local player data
-   - Validate / repair stored data
-   - Handle schema migration
-   - Provide safe update helpers
+   - Define persistent root schema
+   - Read Local Storage safely
+   - Sanitize corrupted / legacy data
+   - Migrate older schema versions
+   - Persist updates
+   - Provide atomic-style updateData()
    - Reset local game data
+   - Preserve forward-compatible History entries
 
    IMPORTANT:
-   This module does NOT implement game rules.
-
-   It does NOT:
-   - Give first-login coins
-   - Give daily-login rewards
-   - Calculate login streaks
-   - Deduct bets
-   - Add cashout rewards
-   - Generate crash results
-
-   Those systems use this module as the persistence layer.
+   This module does NOT:
+   - Apply login rewards
+   - Modify wallet rules
+   - Calculate statistics
+   - Generate game results
 ========================================================= */
+
+import {
+    clone,
+    isPlainObject,
+    isFiniteNumber
+} from "./utils.js";
 
 
 /* =========================================================
    STORAGE CONFIG
 ========================================================= */
 
-const STORAGE_KEY = "cgFlightData";
+const STORAGE_CONFIG = Object.freeze({
 
-const CURRENT_SCHEMA_VERSION = 2;
+    KEY:
+        "cg-flight-data",
 
-
-/* =========================================================
-   DEFAULT DATA FACTORY
-
-   Always return a NEW object.
-========================================================= */
-
-function createDefaultData() {
-    return {
-        schemaVersion: CURRENT_SCHEMA_VERSION,
-
-        player: {
-            initialized: false,
-            createdAt: null,
-            lastUpdatedAt: null
-        },
-
-        wallet: {
-            balance: 0,
-
-            firstLoginBonusClaimed: false,
-
-            transactions: []
-        },
-
-        login: {
-            lastLoginDate: null,
-            streak: 0,
-            cycleDay: 0
-        },
-
-        settings: {
-            soundEnabled: true,
-            musicEnabled: true
-        },
-
-        statistics: {
-            totalRounds: 0,
-            totalBets: 0,
-            totalWagered: 0,
-            totalReturned: 0,
-            totalProfit: 0,
-            totalLoss: 0,
-
-            cashoutCount: 0,
-            crashLossCount: 0,
-
-            highestCashoutMultiplier: 0,
-            highestCrashMultiplier: 0,
-            highestSingleWin: 0
-        },
-
-        history: []
-    };
-}
+    SCHEMA_VERSION:
+        3
+});
 
 
 /* =========================================================
-   TYPE HELPERS
+   DEFAULT ROOT DATA
 ========================================================= */
 
-function isPlainObject(value) {
-    return (
-        value !== null &&
-        typeof value === "object" &&
-        !Array.isArray(value)
-    );
-}
+const DEFAULT_DATA = Object.freeze({
 
-
-function isFiniteNumber(value) {
-    return (
-        typeof value === "number" &&
-        Number.isFinite(value)
-    );
-}
-
-
-function isNonNegativeNumber(value) {
-    return (
-        isFiniteNumber(value) &&
-        value >= 0
-    );
-}
-
-
-function isNonNegativeInteger(value) {
-    return (
-        Number.isInteger(value) &&
-        value >= 0
-    );
-}
-
-
-function isBoolean(value) {
-    return typeof value === "boolean";
-}
-
-
-function isNullableString(value) {
-    return (
-        value === null ||
-        typeof value === "string"
-    );
-}
-
-
-/* =========================================================
-   VALUE SANITIZERS
-========================================================= */
-
-function sanitizeNonNegativeNumber(
-    value,
-    fallback = 0
-) {
-    return isNonNegativeNumber(value)
-        ? value
-        : fallback;
-}
-
-
-function sanitizeNonNegativeInteger(
-    value,
-    fallback = 0
-) {
-    return isNonNegativeInteger(value)
-        ? value
-        : fallback;
-}
-
-
-function sanitizeBoolean(
-    value,
-    fallback = false
-) {
-    return isBoolean(value)
-        ? value
-        : fallback;
-}
-
-
-function sanitizeNullableString(
-    value,
-    fallback = null
-) {
-    return isNullableString(value)
-        ? value
-        : fallback;
-}
-
-
-/* =========================================================
-   CLONE
-========================================================= */
-
-function cloneData(value) {
-    if (
-        typeof structuredClone === "function"
-    ) {
-        return structuredClone(value);
-    }
-
-    return JSON.parse(
-        JSON.stringify(value)
-    );
-}
-
-
-/* =========================================================
-   TRANSACTION SANITIZER
-========================================================= */
-
-function sanitizeWalletTransaction(
-    transaction
-) {
-    if (!isPlainObject(transaction)) {
-        return null;
-    }
-
-    const id =
-        typeof transaction.id === "string"
-            ? transaction.id
-            : null;
-
-    const type =
-        typeof transaction.type === "string"
-            ? transaction.type
-            : null;
-
-    const direction =
-        transaction.direction === "CREDIT" ||
-        transaction.direction === "DEBIT"
-            ? transaction.direction
-            : null;
-
-    const amount =
-        sanitizeNonNegativeNumber(
-            transaction.amount,
-            -1
-        );
-
-    const balanceBefore =
-        sanitizeNonNegativeNumber(
-            transaction.balanceBefore,
-            -1
-        );
-
-    const balanceAfter =
-        sanitizeNonNegativeNumber(
-            transaction.balanceAfter,
-            -1
-        );
-
-    const createdAt =
-        typeof transaction.createdAt === "string"
-            ? transaction.createdAt
-            : null;
-
-    if (
-        id === null ||
-        type === null ||
-        direction === null ||
-        amount <= 0 ||
-        balanceBefore < 0 ||
-        balanceAfter < 0 ||
-        createdAt === null
-    ) {
-        return null;
-    }
-
-    return {
-        id,
-        type,
-        direction,
-        amount,
-        balanceBefore,
-        balanceAfter,
-        createdAt,
-
-        metadata:
-            transaction.metadata === undefined
-                ? null
-                : cloneData(
-                    transaction.metadata
-                )
-    };
-}
-
-
-/* =========================================================
-   HISTORY ENTRY SANITIZER
-
-   History format will become stricter later when
-   history.js is implemented.
-
-   For now:
-   - only plain objects are accepted
-   - objects are cloned
-========================================================= */
-
-function sanitizeHistoryEntry(entry) {
-    if (!isPlainObject(entry)) {
-        return null;
-    }
-
-    return cloneData(entry);
-}
-
-
-/* =========================================================
-   MAIN SANITIZATION
-========================================================= */
-
-function sanitizeData(rawData) {
-    const defaults =
-        createDefaultData();
-
-    if (!isPlainObject(rawData)) {
-        return defaults;
-    }
-
-    const sanitized =
-        createDefaultData();
-
-
-    /* -----------------------------------------------------
-       Schema
-    ----------------------------------------------------- */
-
-    sanitized.schemaVersion =
-        CURRENT_SCHEMA_VERSION;
+    schemaVersion:
+        STORAGE_CONFIG.SCHEMA_VERSION,
 
 
     /* -----------------------------------------------------
        Player
     ----------------------------------------------------- */
 
-    const rawPlayer =
-        isPlainObject(rawData.player)
-            ? rawData.player
-            : {};
+    player: {
 
-    sanitized.player.initialized =
-        sanitizeBoolean(
-            rawPlayer.initialized,
-            defaults.player.initialized
-        );
+        initialized:
+            false,
 
-    sanitized.player.createdAt =
-        sanitizeNullableString(
-            rawPlayer.createdAt,
-            defaults.player.createdAt
-        );
-
-    sanitized.player.lastUpdatedAt =
-        sanitizeNullableString(
-            rawPlayer.lastUpdatedAt,
-            defaults.player.lastUpdatedAt
-        );
+        createdAt:
+            null
+    },
 
 
     /* -----------------------------------------------------
        Wallet
     ----------------------------------------------------- */
 
-    const rawWallet =
-        isPlainObject(rawData.wallet)
-            ? rawData.wallet
-            : {};
+    wallet: {
 
-    sanitized.wallet.balance =
-        sanitizeNonNegativeNumber(
-            rawWallet.balance,
-            defaults.wallet.balance
-        );
+        balance:
+            0,
 
-    sanitized.wallet.firstLoginBonusClaimed =
-        sanitizeBoolean(
-            rawWallet.firstLoginBonusClaimed,
-            defaults.wallet.firstLoginBonusClaimed
-        );
+        totalCredited:
+            0,
 
-    sanitized.wallet.transactions =
-        Array.isArray(
-            rawWallet.transactions
-        )
-            ? rawWallet.transactions
-                .map(
-                    sanitizeWalletTransaction
-                )
-                .filter(Boolean)
-            : [];
+        totalDebited:
+            0,
+
+        updatedAt:
+            null
+    },
 
 
     /* -----------------------------------------------------
        Login
     ----------------------------------------------------- */
 
-    const rawLogin =
-        isPlainObject(rawData.login)
-            ? rawData.login
-            : {};
+    login: {
 
-    sanitized.login.lastLoginDate =
-        sanitizeNullableString(
-            rawLogin.lastLoginDate,
-            defaults.login.lastLoginDate
-        );
+        lastLoginDate:
+            null,
 
-    sanitized.login.streak =
-        sanitizeNonNegativeInteger(
-            rawLogin.streak,
-            defaults.login.streak
-        );
+        streak:
+            0,
 
-    sanitized.login.cycleDay =
-        sanitizeNonNegativeInteger(
-            rawLogin.cycleDay,
-            defaults.login.cycleDay
-        );
+        cycleDay:
+            0,
 
-    if (
-        sanitized.login.cycleDay > 7
-    ) {
-        sanitized.login.cycleDay = 0;
-    }
+        totalLoginDays:
+            0,
+
+        lastReward:
+            0,
+
+        lastRewardAt:
+            null
+    },
 
 
     /* -----------------------------------------------------
        Settings
     ----------------------------------------------------- */
 
-    const rawSettings =
-        isPlainObject(rawData.settings)
-            ? rawData.settings
-            : {};
+    settings: {
 
-    sanitized.settings.soundEnabled =
-        sanitizeBoolean(
-            rawSettings.soundEnabled,
-            defaults.settings.soundEnabled
-        );
+        soundEnabled:
+            true,
 
-    sanitized.settings.musicEnabled =
-        sanitizeBoolean(
-            rawSettings.musicEnabled,
-            defaults.settings.musicEnabled
-        );
+        musicEnabled:
+            true
+    },
 
 
     /* -----------------------------------------------------
        Statistics
     ----------------------------------------------------- */
 
-    const rawStatistics =
-        isPlainObject(rawData.statistics)
-            ? rawData.statistics
-            : {};
+    statistics: {
 
-    sanitized.statistics.totalRounds =
-        sanitizeNonNegativeInteger(
-            rawStatistics.totalRounds,
-            defaults.statistics.totalRounds
-        );
+        totalRounds:
+            0,
 
-    sanitized.statistics.totalBets =
-        sanitizeNonNegativeInteger(
-            rawStatistics.totalBets,
-            defaults.statistics.totalBets
-        );
+        totalBets:
+            0,
 
-    sanitized.statistics.totalWagered =
-        sanitizeNonNegativeNumber(
-            rawStatistics.totalWagered,
-            defaults.statistics.totalWagered
-        );
+        totalWagered:
+            0,
 
-    sanitized.statistics.totalReturned =
-        sanitizeNonNegativeNumber(
-            rawStatistics.totalReturned,
-            defaults.statistics.totalReturned
-        );
+        totalReturned:
+            0,
 
-    sanitized.statistics.totalProfit =
-        sanitizeNonNegativeNumber(
-            rawStatistics.totalProfit,
-            defaults.statistics.totalProfit
-        );
+        totalProfit:
+            0,
 
-    sanitized.statistics.totalLoss =
-        sanitizeNonNegativeNumber(
-            rawStatistics.totalLoss,
-            defaults.statistics.totalLoss
-        );
+        totalLoss:
+            0,
 
-    sanitized.statistics.cashoutCount =
-        sanitizeNonNegativeInteger(
-            rawStatistics.cashoutCount,
-            defaults.statistics.cashoutCount
-        );
+        cashoutCount:
+            0,
 
-    sanitized.statistics.crashLossCount =
-        sanitizeNonNegativeInteger(
-            rawStatistics.crashLossCount,
-            defaults.statistics.crashLossCount
-        );
+        crashLossCount:
+            0,
 
-    sanitized.statistics.highestCashoutMultiplier =
-        sanitizeNonNegativeNumber(
-            rawStatistics.highestCashoutMultiplier,
-            defaults.statistics.highestCashoutMultiplier
-        );
+        highestCashoutMultiplier:
+            0,
 
-    sanitized.statistics.highestCrashMultiplier =
-        sanitizeNonNegativeNumber(
-            rawStatistics.highestCrashMultiplier,
-            defaults.statistics.highestCrashMultiplier
-        );
+        highestCrashMultiplier:
+            0,
 
-    sanitized.statistics.highestSingleWin =
-        sanitizeNonNegativeNumber(
-            rawStatistics.highestSingleWin,
-            defaults.statistics.highestSingleWin
-        );
+        highestSingleWin:
+            0
+    },
 
 
     /* -----------------------------------------------------
        History
+
+       Stored oldest -> newest.
+
+       History entries remain flexible plain objects so
+       later fields such as:
+
+           statisticsRecorded
+           statisticsRecordedAt
+
+       are preserved automatically.
     ----------------------------------------------------- */
 
-    sanitized.history =
-        Array.isArray(rawData.history)
-            ? rawData.history
-                .map(
-                    sanitizeHistoryEntry
-                )
-                .filter(Boolean)
-            : [];
-
-
-    return sanitized;
-}
+    history:
+        []
+});
 
 
 /* =========================================================
-   RAW STORAGE ACCESS
-========================================================= */
-
-function readRawStorage() {
-    try {
-        return localStorage.getItem(
-            STORAGE_KEY
-        );
-    } catch (error) {
-        console.error(
-            "[CG Flight] Unable to read localStorage:",
-            error
-        );
-
-        return null;
-    }
-}
-
-
-function writeRawStorage(
-    serializedData
-) {
-    try {
-        localStorage.setItem(
-            STORAGE_KEY,
-            serializedData
-        );
-
-        return true;
-    } catch (error) {
-        console.error(
-            "[CG Flight] Unable to write localStorage:",
-            error
-        );
-
-        return false;
-    }
-}
-
-
-/* =========================================================
-   MIGRATION: V1 -> V2
-
-   V1 wallet:
-   {
-       balance
-   }
-
-   V2 wallet:
-   {
-       balance,
-       firstLoginBonusClaimed,
-       transactions
-   }
-========================================================= */
-
-function migrateV1ToV2(data) {
-    const migrated =
-        cloneData(data);
-
-    if (
-        !isPlainObject(
-            migrated.wallet
-        )
-    ) {
-        migrated.wallet = {};
-    }
-
-    if (
-        typeof
-        migrated.wallet
-            .firstLoginBonusClaimed
-        !== "boolean"
-    ) {
-        /*
-         Important migration behavior:
-
-         Existing V1 players may already have received
-         the original first-login bonus before this flag
-         existed.
-
-         If player.initialized === true, treat the bonus
-         as already claimed to prevent duplicate +10,000.
-        */
-
-        migrated.wallet
-            .firstLoginBonusClaimed =
-            Boolean(
-                migrated.player &&
-                migrated.player.initialized
-            );
-    }
-
-    if (
-        !Array.isArray(
-            migrated.wallet.transactions
-        )
-    ) {
-        migrated.wallet.transactions = [];
-    }
-
-    migrated.schemaVersion = 2;
-
-    return migrated;
-}
-
-
-/* =========================================================
-   MIGRATION PIPELINE
-========================================================= */
-
-function migrateAndSanitize(
-    rawData
-) {
-    if (!isPlainObject(rawData)) {
-        return createDefaultData();
-    }
-
-    let workingData =
-        cloneData(rawData);
-
-    let version =
-        Number.isInteger(
-            workingData.schemaVersion
-        )
-            ? workingData.schemaVersion
-            : 0;
-
-
-    /*
-     Legacy / version 0 data.
-
-     Treat as V1-compatible first.
-    */
-
-    if (version < 1) {
-        workingData.schemaVersion = 1;
-        version = 1;
-    }
-
-
-    /*
-     V1 -> V2
-    */
-
-    if (version < 2) {
-        workingData =
-            migrateV1ToV2(
-                workingData
-            );
-
-        version = 2;
-    }
-
-
-    /*
-     Future migrations:
-
-     if (version < 3) {
-         workingData =
-             migrateV2ToV3(
-                 workingData
-             );
-
-         version = 3;
-     }
-    */
-
-
-    return sanitizeData(
-        workingData
-    );
-}
-
-
-/* =========================================================
-   SAVE DATA
-========================================================= */
-
-function saveData(data) {
-    const sanitized =
-        sanitizeData(data);
-
-    sanitized.player.lastUpdatedAt =
-        new Date().toISOString();
-
-    try {
-        const serialized =
-            JSON.stringify(
-                sanitized
-            );
-
-        const success =
-            writeRawStorage(
-                serialized
-            );
-
-        return success
-            ? cloneData(
-                sanitized
-            )
-            : null;
-    } catch (error) {
-        console.error(
-            "[CG Flight] Unable to serialize game data:",
-            error
-        );
-
-        return null;
-    }
-}
-
-
-/* =========================================================
-   LOAD DATA
-========================================================= */
-
-function loadData() {
-    const raw =
-        readRawStorage();
-
-    /*
-     No local data yet.
-
-     Return defaults only.
-     Player initialization remains separate.
-    */
-
-    if (raw === null) {
-        return createDefaultData();
-    }
-
-    try {
-        const parsed =
-            JSON.parse(raw);
-
-        const migrated =
-            migrateAndSanitize(
-                parsed
-            );
-
-        /*
-         Save migrated / repaired structure back.
-        */
-
-        const saved =
-            saveData(migrated);
-
-        return cloneData(
-            saved ?? migrated
-        );
-    } catch (error) {
-        console.warn(
-            "[CG Flight] Stored data is invalid. Restoring default structure.",
-            error
-        );
-
-        const fallback =
-            createDefaultData();
-
-        const saved =
-            saveData(fallback);
-
-        return cloneData(
-            saved ?? fallback
-        );
-    }
-}
-
-
-/* =========================================================
-   CHECK STORED DATA
-========================================================= */
-
-function hasStoredData() {
-    return (
-        readRawStorage() !== null
-    );
-}
-
-
-/* =========================================================
-   GET DATA
-========================================================= */
-
-function getData() {
-    return loadData();
-}
-
-
-/* =========================================================
-   UPDATE DATA
-
-   Usage:
-
-   updateData((data) => {
-       data.wallet.balance += 1000;
-   });
-
-   Or:
-
-   updateData((data) => {
-       data.settings.musicEnabled = false;
-       return data;
-   });
-
-   Returning undefined saves the mutated working copy.
-========================================================= */
-
-function updateData(updater) {
-    if (
-        typeof updater !== "function"
-    ) {
-        throw new TypeError(
-            "[CG Flight] updateData requires a function."
-        );
-    }
-
-    const currentData =
-        loadData();
-
-    const workingCopy =
-        cloneData(currentData);
-
-    let updaterResult;
-
-    try {
-        updaterResult =
-            updater(
-                workingCopy
-            );
-    } catch (error) {
-        console.error(
-            "[CG Flight] Data update callback failed:",
-            error
-        );
-
-        throw error;
-    }
-
-    const nextData =
-        updaterResult === undefined
-            ? workingCopy
-            : updaterResult;
-
-    if (!isPlainObject(nextData)) {
-        throw new TypeError(
-            "[CG Flight] updateData callback must return an object or undefined."
-        );
-    }
-
-    return saveData(
-        nextData
-    );
-}
-
-
-/* =========================================================
-   PLAYER INITIALIZATION
-
-   Does NOT award coins.
-
-   Returns:
-   {
-       created,
-       data
-   }
-========================================================= */
-
-function initializePlayerData() {
-    const data =
-        loadData();
-
-    if (
-        data.player.initialized
-    ) {
-        return {
-            created: false,
-            data
-        };
-    }
-
-    const now =
-        new Date().toISOString();
-
-    data.player.initialized =
-        true;
-
-    data.player.createdAt =
-        now;
-
-    const saved =
-        saveData(data);
-
-    return {
-        created: true,
-        data:
-            saved ?? data
-    };
-}
-
-
-/* =========================================================
-   RESET DATA
-
-   Completely removes CG Flight data.
-========================================================= */
-
-function resetData() {
-    try {
-        localStorage.removeItem(
-            STORAGE_KEY
-        );
-
-        return true;
-    } catch (error) {
-        console.error(
-            "[CG Flight] Unable to reset local data:",
-            error
-        );
-
-        return false;
-    }
-}
-
-
-/* =========================================================
-   RESTORE DEFAULT DATA
-
-   Leaves a valid default object in localStorage.
-========================================================= */
-
-function restoreDefaultData() {
-    return saveData(
-        createDefaultData()
-    );
-}
-
-
-/* =========================================================
-   STORAGE INFO
-========================================================= */
-
-function getStorageInfo() {
-    const raw =
-        readRawStorage();
-
-    return {
-        key:
-            STORAGE_KEY,
-
-        schemaVersion:
-            CURRENT_SCHEMA_VERSION,
-
-        exists:
-            raw !== null,
-
-        bytes:
-            raw === null
-                ? 0
-                : getByteSize(raw)
-    };
-}
-
-
-/* =========================================================
-   BYTE SIZE
-========================================================= */
-
-function getByteSize(value) {
-    if (
-        typeof TextEncoder !==
-        "undefined"
-    ) {
-        return (
-            new TextEncoder()
-                .encode(value)
-                .length
-        );
-    }
-
-    try {
-        return (
-            new Blob([value])
-                .size
-        );
-    } catch {
-        return value.length;
-    }
-}
-
-
-/* =========================================================
-   VALIDATE STORED DATA
-========================================================= */
-
-function validateStoredData() {
-    const raw =
-        readRawStorage();
-
-    if (raw === null) {
-        return true;
-    }
-
-    try {
-        const parsed =
-            JSON.parse(raw);
-
-        migrateAndSanitize(
-            parsed
-        );
-
-        return true;
-    } catch {
-        return false;
-    }
-}
-
-
-/* =========================================================
-   EXTERNAL STORAGE CHANGE LISTENERS
+   STORAGE LISTENERS
 ========================================================= */
 
 const storageListeners =
     new Set();
 
 
-function subscribeToStorageChanges(
+function subscribeToStorage(
     listener
 ) {
     if (
@@ -1082,11 +207,14 @@ function subscribeToStorageChanges(
         );
     }
 
+
     storageListeners.add(
         listener
     );
 
+
     return function unsubscribe() {
+
         storageListeners.delete(
             listener
         );
@@ -1095,34 +223,38 @@ function subscribeToStorageChanges(
 
 
 /* =========================================================
-   NATIVE STORAGE EVENT
-
-   Fires only when another tab/window modifies
-   the same localStorage key.
+   NOTIFY STORAGE LISTENERS
 ========================================================= */
 
-function handleStorageEvent(event) {
-    if (
-        event.storageArea !==
-            localStorage ||
-        event.key !==
-            STORAGE_KEY
-    ) {
-        return;
-    }
+function notifyStorageListeners(
+    previous,
+    current
+) {
+    const event = {
 
-    const data =
-        loadData();
+        previous:
+            clone(previous),
+
+        current:
+            clone(current),
+
+        timestamp:
+            Date.now()
+    };
+
 
     for (
         const listener
         of storageListeners
     ) {
         try {
+
             listener(
-                cloneData(data)
+                event
             );
+
         } catch (error) {
+
             console.error(
                 "[CG Flight] Storage listener failed:",
                 error
@@ -1132,10 +264,1204 @@ function handleStorageEvent(event) {
 }
 
 
-window.addEventListener(
-    "storage",
-    handleStorageEvent
-);
+/* =========================================================
+   BASIC SANITIZERS
+========================================================= */
+
+function sanitizeBoolean(
+    value,
+    fallback
+) {
+    return typeof value ===
+        "boolean"
+        ? value
+        : fallback;
+}
+
+
+function sanitizeNonNegativeNumber(
+    value,
+    fallback = 0
+) {
+    const numeric =
+        Number(value);
+
+
+    if (
+        !Number.isFinite(
+            numeric
+        ) ||
+        numeric < 0
+    ) {
+        return fallback;
+    }
+
+
+    return numeric;
+}
+
+
+function sanitizeNonNegativeInteger(
+    value,
+    fallback = 0
+) {
+    const numeric =
+        Number(value);
+
+
+    if (
+        !Number.isInteger(
+            numeric
+        ) ||
+        numeric < 0
+    ) {
+        return fallback;
+    }
+
+
+    return numeric;
+}
+
+
+function sanitizeNullableString(
+    value
+) {
+    if (
+        value === null ||
+        value === undefined
+    ) {
+        return null;
+    }
+
+
+    if (
+        typeof value !==
+        "string"
+    ) {
+        return null;
+    }
+
+
+    const trimmed =
+        value.trim();
+
+
+    return trimmed.length > 0
+        ? trimmed
+        : null;
+}
+
+
+/* =========================================================
+   PLAYER SANITIZER
+========================================================= */
+
+function sanitizePlayer(
+    player
+) {
+    const source =
+        isPlainObject(player)
+            ? player
+            : {};
+
+
+    return {
+
+        initialized:
+            sanitizeBoolean(
+                source.initialized,
+                false
+            ),
+
+        createdAt:
+            sanitizeNullableString(
+                source.createdAt
+            )
+    };
+}
+
+
+/* =========================================================
+   WALLET SANITIZER
+========================================================= */
+
+function sanitizeWallet(
+    wallet
+) {
+    const source =
+        isPlainObject(wallet)
+            ? wallet
+            : {};
+
+
+    return {
+
+        balance:
+            sanitizeNonNegativeNumber(
+                source.balance
+            ),
+
+        totalCredited:
+            sanitizeNonNegativeNumber(
+                source.totalCredited
+            ),
+
+        totalDebited:
+            sanitizeNonNegativeNumber(
+                source.totalDebited
+            ),
+
+        updatedAt:
+            sanitizeNullableString(
+                source.updatedAt
+            )
+    };
+}
+
+
+/* =========================================================
+   LOGIN SANITIZER
+========================================================= */
+
+function sanitizeLogin(
+    login
+) {
+    const source =
+        isPlainObject(login)
+            ? login
+            : {};
+
+
+    const cycleDay =
+        sanitizeNonNegativeInteger(
+            source.cycleDay
+        );
+
+
+    return {
+
+        lastLoginDate:
+            sanitizeNullableString(
+                source.lastLoginDate
+            ),
+
+        streak:
+            sanitizeNonNegativeInteger(
+                source.streak
+            ),
+
+        cycleDay:
+            cycleDay >= 1 &&
+            cycleDay <= 7
+                ? cycleDay
+                : 0,
+
+        totalLoginDays:
+            sanitizeNonNegativeInteger(
+                source.totalLoginDays
+            ),
+
+        lastReward:
+            sanitizeNonNegativeNumber(
+                source.lastReward
+            ),
+
+        lastRewardAt:
+            sanitizeNullableString(
+                source.lastRewardAt
+            )
+    };
+}
+
+
+/* =========================================================
+   SETTINGS SANITIZER
+========================================================= */
+
+function sanitizeSettings(
+    settings
+) {
+    const source =
+        isPlainObject(settings)
+            ? settings
+            : {};
+
+
+    return {
+
+        soundEnabled:
+            sanitizeBoolean(
+                source.soundEnabled,
+                true
+            ),
+
+        musicEnabled:
+            sanitizeBoolean(
+                source.musicEnabled,
+                true
+            )
+    };
+}
+
+
+/* =========================================================
+   STATISTICS SANITIZER
+========================================================= */
+
+function sanitizeStatistics(
+    statistics
+) {
+    const source =
+        isPlainObject(
+            statistics
+        )
+            ? statistics
+            : {};
+
+
+    return {
+
+        totalRounds:
+            sanitizeNonNegativeInteger(
+                source.totalRounds
+            ),
+
+        totalBets:
+            sanitizeNonNegativeInteger(
+                source.totalBets
+            ),
+
+        totalWagered:
+            sanitizeNonNegativeNumber(
+                source.totalWagered
+            ),
+
+        totalReturned:
+            sanitizeNonNegativeNumber(
+                source.totalReturned
+            ),
+
+        totalProfit:
+            sanitizeNonNegativeNumber(
+                source.totalProfit
+            ),
+
+        totalLoss:
+            sanitizeNonNegativeNumber(
+                source.totalLoss
+            ),
+
+        cashoutCount:
+            sanitizeNonNegativeInteger(
+                source.cashoutCount
+            ),
+
+        crashLossCount:
+            sanitizeNonNegativeInteger(
+                source.crashLossCount
+            ),
+
+        highestCashoutMultiplier:
+            sanitizeNonNegativeNumber(
+                source.highestCashoutMultiplier
+            ),
+
+        highestCrashMultiplier:
+            sanitizeNonNegativeNumber(
+                source.highestCrashMultiplier
+            ),
+
+        highestSingleWin:
+            sanitizeNonNegativeNumber(
+                source.highestSingleWin
+            )
+    };
+}
+
+
+/* =========================================================
+   HISTORY SANITIZER
+
+   IMPORTANT:
+   Do NOT rebuild entries from a fixed whitelist.
+
+   History is intentionally forward-compatible because other
+   modules may add fields later.
+========================================================= */
+
+function sanitizeHistory(
+    history
+) {
+    if (
+        !Array.isArray(
+            history
+        )
+    ) {
+        return [];
+    }
+
+
+    return history
+        .filter(
+            (entry) =>
+                isPlainObject(
+                    entry
+                )
+        )
+        .map(
+            (entry) =>
+                clone(entry)
+        );
+}
+
+
+/* =========================================================
+   ROOT SANITIZER
+========================================================= */
+
+function sanitizeData(
+    data
+) {
+    const source =
+        isPlainObject(data)
+            ? data
+            : {};
+
+
+    return {
+
+        schemaVersion:
+            STORAGE_CONFIG
+                .SCHEMA_VERSION,
+
+        player:
+            sanitizePlayer(
+                source.player
+            ),
+
+        wallet:
+            sanitizeWallet(
+                source.wallet
+            ),
+
+        login:
+            sanitizeLogin(
+                source.login
+            ),
+
+        settings:
+            sanitizeSettings(
+                source.settings
+            ),
+
+        statistics:
+            sanitizeStatistics(
+                source.statistics
+            ),
+
+        history:
+            sanitizeHistory(
+                source.history
+            )
+    };
+}
+
+
+/* =========================================================
+   LEGACY MIGRATION
+
+   This migration is intentionally tolerant.
+
+   Older versions may have had:
+   - balance at root level
+   - firstLogin flags
+   - loginStreak naming
+   - sound/music booleans at root level
+========================================================= */
+
+function migrateLegacyData(
+    rawData
+) {
+    if (
+        !isPlainObject(
+            rawData
+        )
+    ) {
+        return clone(
+            DEFAULT_DATA
+        );
+    }
+
+
+    const migrated =
+        clone(
+            rawData
+        );
+
+
+    const version =
+        Number(
+            migrated.schemaVersion
+        ) || 0;
+
+
+    /* =====================================================
+       VERSION < 1
+
+       Early prototype compatibility.
+    ====================================================== */
+
+    if (
+        version < 1
+    ) {
+
+        if (
+            !isPlainObject(
+                migrated.wallet
+            )
+        ) {
+            migrated.wallet = {};
+        }
+
+
+        if (
+            Number.isFinite(
+                Number(
+                    migrated.balance
+                )
+            )
+        ) {
+            migrated.wallet.balance =
+                Number(
+                    migrated.balance
+                );
+        }
+
+
+        if (
+            !isPlainObject(
+                migrated.player
+            )
+        ) {
+            migrated.player = {};
+        }
+
+
+        if (
+            typeof migrated.initialized ===
+            "boolean"
+        ) {
+            migrated.player.initialized =
+                migrated.initialized;
+        }
+
+
+        if (
+            !isPlainObject(
+                migrated.settings
+            )
+        ) {
+            migrated.settings = {};
+        }
+
+
+        if (
+            typeof migrated.soundEnabled ===
+            "boolean"
+        ) {
+            migrated.settings.soundEnabled =
+                migrated.soundEnabled;
+        }
+
+
+        if (
+            typeof migrated.musicEnabled ===
+            "boolean"
+        ) {
+            migrated.settings.musicEnabled =
+                migrated.musicEnabled;
+        }
+    }
+
+
+    /* =====================================================
+       VERSION < 2
+
+       Normalize login fields.
+    ====================================================== */
+
+    if (
+        version < 2
+    ) {
+
+        if (
+            !isPlainObject(
+                migrated.login
+            )
+        ) {
+            migrated.login = {};
+        }
+
+
+        if (
+            Number.isInteger(
+                Number(
+                    migrated.loginStreak
+                )
+            )
+        ) {
+            migrated.login.streak =
+                Number(
+                    migrated.loginStreak
+                );
+        }
+
+
+        if (
+            typeof migrated.lastLoginDate ===
+            "string"
+        ) {
+            migrated.login.lastLoginDate =
+                migrated.lastLoginDate;
+        }
+
+
+        if (
+            !Number.isInteger(
+                Number(
+                    migrated.login.cycleDay
+                )
+            )
+        ) {
+
+            const streak =
+                Number(
+                    migrated.login.streak
+                ) || 0;
+
+
+            migrated.login.cycleDay =
+                streak > 0
+                    ? (
+                        (
+                            streak - 1
+                        ) %
+                        7
+                    ) + 1
+                    : 0;
+        }
+    }
+
+
+    /* =====================================================
+       VERSION < 3
+
+       Current Statistics + History compatibility.
+    ====================================================== */
+
+    if (
+        version < 3
+    ) {
+
+        if (
+            !isPlainObject(
+                migrated.statistics
+            )
+        ) {
+            migrated.statistics = {};
+        }
+
+
+        if (
+            !Array.isArray(
+                migrated.history
+            )
+        ) {
+            migrated.history = [];
+        }
+
+
+        /*
+         Do NOT add statisticsRecorded markers here.
+
+         statistics.js owns that migration because it must
+         inspect aggregate statistics before deciding whether
+         old History records were already counted.
+        */
+    }
+
+
+    migrated.schemaVersion =
+        STORAGE_CONFIG
+            .SCHEMA_VERSION;
+
+
+    return migrated;
+}
+
+
+/* =========================================================
+   RAW READ
+========================================================= */
+
+function readRawStorage() {
+    try {
+
+        return localStorage.getItem(
+            STORAGE_CONFIG.KEY
+        );
+
+    } catch (error) {
+
+        console.error(
+            "[CG Flight] Unable to access Local Storage:",
+            error
+        );
+
+
+        return null;
+    }
+}
+
+
+/* =========================================================
+   RAW WRITE
+========================================================= */
+
+function writeRawStorage(
+    data
+) {
+    try {
+
+        localStorage.setItem(
+            STORAGE_CONFIG.KEY,
+            JSON.stringify(
+                data
+            )
+        );
+
+
+        return true;
+
+    } catch (error) {
+
+        console.error(
+            "[CG Flight] Unable to write Local Storage:",
+            error
+        );
+
+
+        return false;
+    }
+}
+
+
+/* =========================================================
+   READ DATA
+
+   This is the canonical read path.
+========================================================= */
+
+function getData() {
+    const raw =
+        readRawStorage();
+
+
+    if (
+        raw === null
+    ) {
+        return clone(
+            DEFAULT_DATA
+        );
+    }
+
+
+    let parsed;
+
+
+    try {
+
+        parsed =
+            JSON.parse(
+                raw
+            );
+
+    } catch (error) {
+
+        console.warn(
+            "[CG Flight] Corrupted Local Storage JSON. Using defaults.",
+            error
+        );
+
+
+        return clone(
+            DEFAULT_DATA
+        );
+    }
+
+
+    const migrated =
+        migrateLegacyData(
+            parsed
+        );
+
+
+    return sanitizeData(
+        migrated
+    );
+}
+
+
+/* =========================================================
+   SAVE DATA
+========================================================= */
+
+function saveData(
+    data
+) {
+    const sanitized =
+        sanitizeData(
+            data
+        );
+
+
+    const success =
+        writeRawStorage(
+            sanitized
+        );
+
+
+    return success
+        ? clone(
+            sanitized
+        )
+        : null;
+}
+
+
+/* =========================================================
+   UPDATE DATA
+
+   Main mutation API.
+
+   Flow:
+   1. Read latest storage
+   2. Clone working state
+   3. Run mutator synchronously
+   4. Sanitize result
+   5. Persist result
+   6. Notify listeners
+========================================================= */
+
+function updateData(
+    mutator
+) {
+    if (
+        typeof mutator !==
+        "function"
+    ) {
+        throw new TypeError(
+            "[CG Flight] updateData() requires a mutator function."
+        );
+    }
+
+
+    const previous =
+        getData();
+
+
+    const working =
+        clone(
+            previous
+        );
+
+
+    try {
+
+        const returned =
+            mutator(
+                working
+            );
+
+
+        /*
+         updateData() is intentionally synchronous.
+
+         Accidentally returning a Promise is almost always a
+         programming error because Local Storage itself is
+         synchronous.
+        */
+
+        if (
+            returned &&
+            typeof returned.then ===
+            "function"
+        ) {
+            throw new TypeError(
+                "[CG Flight] updateData() mutator must be synchronous."
+            );
+        }
+
+    } catch (error) {
+
+        console.error(
+            "[CG Flight] Storage update mutator failed:",
+            error
+        );
+
+
+        return null;
+    }
+
+
+    const next =
+        sanitizeData(
+            working
+        );
+
+
+    const saved =
+        writeRawStorage(
+            next
+        );
+
+
+    if (!saved) {
+        return null;
+    }
+
+
+    notifyStorageListeners(
+        previous,
+        next
+    );
+
+
+    return clone(
+        next
+    );
+}
+
+
+/* =========================================================
+   INITIALIZE STORAGE
+
+   Writes sanitized current schema into Local Storage.
+
+   Useful once at startup / first player initialization.
+========================================================= */
+
+function initializeStorage() {
+    const existing =
+        getData();
+
+
+    const saved =
+        saveData(
+            existing
+        );
+
+
+    return saved;
+}
+
+
+/* =========================================================
+   HAS STORED DATA
+========================================================= */
+
+function hasStoredData() {
+    return (
+        readRawStorage() !==
+        null
+    );
+}
+
+
+/* =========================================================
+   RESET DATA
+========================================================= */
+
+function resetData() {
+    const previous =
+        getData();
+
+
+    const next =
+        clone(
+            DEFAULT_DATA
+        );
+
+
+    const saved =
+        writeRawStorage(
+            next
+        );
+
+
+    if (!saved) {
+        return {
+            success: false,
+
+            reason:
+                "STORAGE_WRITE_FAILED"
+        };
+    }
+
+
+    notifyStorageListeners(
+        previous,
+        next
+    );
+
+
+    return {
+        success: true,
+
+        data:
+            clone(
+                next
+            )
+    };
+}
+
+
+/* =========================================================
+   REMOVE STORAGE ENTIRELY
+
+   Different from resetData():
+   - resetData() writes DEFAULT_DATA
+   - clearStorage() removes the Local Storage key
+
+   After clearStorage(), the next getData() behaves as a
+   completely fresh installation.
+========================================================= */
+
+function clearStorage() {
+    const previous =
+        getData();
+
+
+    try {
+
+        localStorage.removeItem(
+            STORAGE_CONFIG.KEY
+        );
+
+    } catch (error) {
+
+        console.error(
+            "[CG Flight] Unable to clear Local Storage:",
+            error
+        );
+
+
+        return {
+            success: false,
+
+            reason:
+                "STORAGE_REMOVE_FAILED"
+        };
+    }
+
+
+    const current =
+        clone(
+            DEFAULT_DATA
+        );
+
+
+    notifyStorageListeners(
+        previous,
+        current
+    );
+
+
+    return {
+        success: true,
+
+        data:
+            current
+    };
+}
+
+
+/* =========================================================
+   EXPORT DATA
+
+   Helpful for debugging / backup.
+========================================================= */
+
+function exportData() {
+    return clone(
+        getData()
+    );
+}
+
+
+/* =========================================================
+   IMPORT DATA
+
+   Useful for development/testing.
+
+   Imported content is migrated and sanitized before saving.
+========================================================= */
+
+function importData(
+    data
+) {
+    if (
+        !isPlainObject(
+            data
+        )
+    ) {
+        return {
+            success: false,
+
+            reason:
+                "INVALID_DATA"
+        };
+    }
+
+
+    const previous =
+        getData();
+
+
+    const migrated =
+        migrateLegacyData(
+            data
+        );
+
+
+    const sanitized =
+        sanitizeData(
+            migrated
+        );
+
+
+    const saved =
+        writeRawStorage(
+            sanitized
+        );
+
+
+    if (!saved) {
+        return {
+            success: false,
+
+            reason:
+                "STORAGE_WRITE_FAILED"
+        };
+    }
+
+
+    notifyStorageListeners(
+        previous,
+        sanitized
+    );
+
+
+    return {
+        success: true,
+
+        data:
+            clone(
+                sanitized
+            )
+    };
+}
+
+
+/* =========================================================
+   STORAGE EVENT
+
+   If multiple tabs of CG Flight are open, listen for another
+   tab modifying the same Local Storage key.
+========================================================= */
+
+if (
+    typeof window !==
+        "undefined"
+) {
+
+    window.addEventListener(
+        "storage",
+        (event) => {
+
+            if (
+                event.key !==
+                STORAGE_CONFIG.KEY
+            ) {
+                return;
+            }
+
+
+            let previous =
+                clone(
+                    DEFAULT_DATA
+                );
+
+
+            let current =
+                clone(
+                    DEFAULT_DATA
+                );
+
+
+            if (
+                event.oldValue
+            ) {
+                try {
+
+                    previous =
+                        sanitizeData(
+                            migrateLegacyData(
+                                JSON.parse(
+                                    event.oldValue
+                                )
+                            )
+                        );
+
+                } catch (error) {
+
+                    /*
+                     Keep default previous data.
+                    */
+                }
+            }
+
+
+            if (
+                event.newValue
+            ) {
+                try {
+
+                    current =
+                        sanitizeData(
+                            migrateLegacyData(
+                                JSON.parse(
+                                    event.newValue
+                                )
+                            )
+                        );
+
+                } catch (error) {
+
+                    /*
+                     Keep default current data.
+                    */
+                }
+            }
+
+
+            notifyStorageListeners(
+                previous,
+                current
+            );
+        }
+    );
+}
 
 
 /* =========================================================
@@ -1143,25 +1469,22 @@ window.addEventListener(
 ========================================================= */
 
 export {
-    STORAGE_KEY,
-    CURRENT_SCHEMA_VERSION,
+    STORAGE_CONFIG,
+    DEFAULT_DATA,
 
-    createDefaultData,
-
-    hasStoredData,
-
-    loadData,
     getData,
     saveData,
     updateData,
 
-    initializePlayerData,
+    initializeStorage,
+
+    hasStoredData,
 
     resetData,
-    restoreDefaultData,
+    clearStorage,
 
-    getStorageInfo,
-    validateStoredData,
+    exportData,
+    importData,
 
-    subscribeToStorageChanges
+    subscribeToStorage
 };
