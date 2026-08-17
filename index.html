@@ -10,19 +10,24 @@
 
     <meta
         name="description"
-        content="CG Flight - 飛行倍率 Crash Game 瀏覽器遊戲"
+        content="CG Flight - 純前端飛行倍率 Crash Game"
     >
 
     <title>CG Flight</title>
 
-    <!-- Favicon -->
+    <!-- =====================================================
+         FAVICON
+    ====================================================== -->
     <link
         rel="icon"
         type="image/png"
         href="./assets/images/favicon.png"
     >
 
-    <!-- Styles -->
+
+    <!-- =====================================================
+         STYLES
+    ====================================================== -->
     <link
         rel="stylesheet"
         href="./css/common.css"
@@ -34,6 +39,7 @@
     >
 </head>
 
+
 <body>
 
     <!-- =========================================================
@@ -41,63 +47,89 @@
     ========================================================== -->
     <div
         id="app"
-        class="app"
+        class="app lobby-app"
     >
 
         <!-- =====================================================
-             LOBBY BACKGROUND
+             BACKGROUND
         ====================================================== -->
         <div
             class="lobby-background"
             aria-hidden="true"
         ></div>
 
+
         <!-- =====================================================
              HEADER
         ====================================================== -->
         <header class="lobby-header">
 
-            <!-- Logo -->
-            <a
-                class="brand"
-                href="./index.html"
-                aria-label="CG Flight 首頁"
-            >
-                <img
-                    class="brand-logo"
-                    src="./assets/images/logo-small.webp"
-                    alt="CG Flight"
+            <!-- -------------------------------------------------
+                 LEFT
+            -------------------------------------------------- -->
+            <div class="lobby-header-left">
+
+                <a
+                    class="lobby-brand"
+                    href="./index.html"
+                    aria-label="CG Flight 首頁"
                 >
-            </a>
+                    <img
+                        class="lobby-brand-logo"
+                        src="./assets/images/logo-small.webp"
+                        alt="CG Flight"
+                    >
+                </a>
+
+            </div>
 
 
-            <!-- Header Actions -->
-            <div class="header-actions">
+            <!-- -------------------------------------------------
+                 CENTER
+            -------------------------------------------------- -->
+            <div class="lobby-header-center">
+
+                <span class="lobby-header-subtitle">
+                    FLIGHT CONTROL CENTER
+                </span>
+
+            </div>
+
+
+            <!-- -------------------------------------------------
+                 RIGHT
+            -------------------------------------------------- -->
+            <div class="lobby-header-right">
 
                 <!-- Wallet -->
                 <div
-                    class="wallet-display"
+                    class="lobby-wallet"
                     aria-label="玩家代幣餘額"
                 >
+
                     <img
-                        class="wallet-icon"
                         src="./assets/icons/coin.svg"
                         alt=""
                         aria-hidden="true"
                     >
 
-                    <div class="wallet-info">
-                        <span class="wallet-label">
+
+                    <div class="lobby-wallet-content">
+
+                        <span class="lobby-wallet-label">
                             BALANCE
                         </span>
 
-                        <span
+
+                        <strong
                             id="walletBalance"
-                            class="wallet-balance"
+                            class="lobby-wallet-balance"
                         >
                             0
-                        </span>
+                        </strong>
+
                     </div>
+
                 </div>
 
 
@@ -151,6 +183,7 @@
                 </button>
 
             </div>
+
         </header>
 
 
@@ -159,107 +192,271 @@
         ====================================================== -->
         <main class="lobby-main">
 
+
             <!-- =================================================
                  HERO
             ================================================== -->
-            <section
-                class="hero-section"
-                aria-labelledby="heroTitle"
-            >
+            <section class="lobby-hero">
 
-                <div class="hero-content">
+                <!-- Logo -->
+                <div class="lobby-hero-logo-wrap">
 
                     <img
-                        class="hero-logo"
+                        class="lobby-hero-logo"
                         src="./assets/images/logo.webp"
                         alt="CG Flight"
                     >
 
-                    <h1
-                        id="heroTitle"
-                        class="sr-only"
-                    >
-                        CG Flight
+                </div>
+
+
+                <!-- Copy -->
+                <div class="lobby-hero-copy">
+
+                    <span class="lobby-hero-eyebrow">
+                        READY FOR TAKEOFF
+                    </span>
+
+
+                    <h1 class="lobby-hero-title">
+                        在墜毀前完成你的 Cash Out
                     </h1>
 
-                    <p class="hero-subtitle">
-                        TAKE OFF. RIDE THE MULTIPLIER. CASH OUT BEFORE THE CRASH.
+
+                    <p class="lobby-hero-description">
+                        飛機起飛後倍率將持續上升。選擇下注金額、設定 Auto Cash Out，並在隱藏的 Crash Point 抵達以前帶走你的返回代幣。
                     </p>
 
+                </div>
 
-                    <!-- Login Reward -->
-                    <div
-                        id="loginRewardPanel"
-                        class="login-reward-panel"
+
+                <!-- Main Action -->
+                <a
+                    id="playButton"
+                    class="lobby-play-button"
+                    href="./game.html"
+                >
+
+                    <img
+                        src="./assets/icons/plane.svg"
+                        alt=""
+                        aria-hidden="true"
                     >
-                        <div class="login-reward-header">
-
-                            <div class="login-reward-title">
-                                <img
-                                    src="./assets/icons/trophy.svg"
-                                    alt=""
-                                    aria-hidden="true"
-                                >
-
-                                <span>
-                                    DAILY LOGIN
-                                </span>
-                            </div>
 
 
-                            <div class="login-streak">
-                                STREAK
+                    <div class="lobby-play-button-copy">
 
-                                <strong id="loginStreak">
-                                    0
-                                </strong>
+                        <span>
+                            ENTER FLIGHT
+                        </span>
 
-                                DAYS
-                            </div>
+                        <strong>
+                            START GAME
+                        </strong>
 
-                        </div>
+                    </div>
+
+                </a>
+
+            </section>
 
 
-                        <div class="login-reward-body">
+            <!-- =================================================
+                 LOGIN REWARD
+            ================================================== -->
+            <section
+                id="loginRewardPanel"
+                class="login-reward-panel"
+                aria-labelledby="loginRewardTitle"
+            >
 
-                            <span class="login-reward-label">
-                                TODAY'S REWARD
+                <div class="login-reward-header">
+
+                    <div class="login-reward-heading">
+
+                        <img
+                            src="./assets/icons/user.svg"
+                            alt=""
+                            aria-hidden="true"
+                        >
+
+
+                        <div>
+
+                            <span>
+                                DAILY LOGIN
                             </span>
 
-                            <strong
-                                id="todayLoginReward"
-                                class="login-reward-value"
-                            >
-                                +0
-                            </strong>
 
-                            <span class="login-reward-unit">
-                                COINS
-                            </span>
+                            <h2 id="loginRewardTitle">
+                                登入獎勵
+                            </h2>
 
                         </div>
 
                     </div>
 
 
-                    <!-- Play -->
-                    <a
-                        id="playButton"
-                        class="play-button"
-                        href="./game.html"
-                    >
-                        <img
-                            src="./assets/icons/plane.svg"
-                            alt=""
-                            aria-hidden="true"
-                        >
+                    <div class="login-reward-current-day">
 
                         <span>
-                            START FLIGHT
+                            CURRENT DAY
                         </span>
-                    </a>
+
+
+                        <strong>
+                            DAY
+                            <b id="loginStreak">
+                                1
+                            </b>
+                        </strong>
+
+                    </div>
 
                 </div>
+
+
+                <div class="login-reward-content">
+
+                    <!-- Today Reward -->
+                    <div class="login-reward-today">
+
+                        <span class="login-reward-today-label">
+                            TODAY'S REWARD
+                        </span>
+
+
+                        <div class="login-reward-value">
+
+                            <img
+                                src="./assets/icons/coin.svg"
+                                alt=""
+                                aria-hidden="true"
+                            >
+
+
+                            <strong id="todayLoginReward">
+                                +0
+                            </strong>
+
+                        </div>
+
+
+                        <small>
+                            每日登入 +1,000；第 7 天額外 +7,777
+                        </small>
+
+                    </div>
+
+
+                    <!-- Cycle -->
+                    <div class="login-cycle">
+
+                        <div
+                            class="login-cycle-day"
+                            data-day="1"
+                        >
+                            <span>
+                                DAY 1
+                            </span>
+
+                            <strong>
+                                +1K
+                            </strong>
+                        </div>
+
+
+                        <div
+                            class="login-cycle-day"
+                            data-day="2"
+                        >
+                            <span>
+                                DAY 2
+                            </span>
+
+                            <strong>
+                                +1K
+                            </strong>
+                        </div>
+
+
+                        <div
+                            class="login-cycle-day"
+                            data-day="3"
+                        >
+                            <span>
+                                DAY 3
+                            </span>
+
+                            <strong>
+                                +1K
+                            </strong>
+                        </div>
+
+
+                        <div
+                            class="login-cycle-day"
+                            data-day="4"
+                        >
+                            <span>
+                                DAY 4
+                            </span>
+
+                            <strong>
+                                +1K
+                            </strong>
+                        </div>
+
+
+                        <div
+                            class="login-cycle-day"
+                            data-day="5"
+                        >
+                            <span>
+                                DAY 5
+                            </span>
+
+                            <strong>
+                                +1K
+                            </strong>
+                        </div>
+
+
+                        <div
+                            class="login-cycle-day"
+                            data-day="6"
+                        >
+                            <span>
+                                DAY 6
+                            </span>
+
+                            <strong>
+                                +1K
+                            </strong>
+                        </div>
+
+
+                        <div
+                            class="login-cycle-day is-bonus"
+                            data-day="7"
+                        >
+                            <span>
+                                DAY 7
+                            </span>
+
+                            <strong>
+                                +8,777
+                            </strong>
+                        </div>
+
+                    </div>
+
+                </div>
+
+
+                <p class="login-reward-note">
+                    首次建立本地遊戲資料時另贈 10,000 代幣，因此首次登入 Day 1 可獲得共 11,000 代幣。
+                </p>
 
             </section>
 
@@ -267,87 +464,325 @@
             <!-- =================================================
                  NAVIGATION
             ================================================== -->
-            <nav
-                class="lobby-navigation"
-                aria-label="主要功能"
+            <section
+                class="lobby-navigation-section"
+                aria-labelledby="navigationTitle"
             >
 
-                <!-- History -->
-                <a
-                    class="navigation-card"
-                    href="./history.html"
-                >
-                    <div class="navigation-card-icon">
-                        <img
-                            src="./assets/icons/history.svg"
-                            alt=""
+                <div class="lobby-section-heading">
+
+                    <span>
+                        CONTROL CENTER
+                    </span>
+
+
+                    <h2 id="navigationTitle">
+                        遊戲選單
+                    </h2>
+
+                </div>
+
+
+                <div class="lobby-navigation-grid">
+
+                    <!-- -------------------------------------------------
+                         Flight
+                    -------------------------------------------------- -->
+                    <a
+                        class="navigation-card navigation-card-primary"
+                        href="./game.html"
+                    >
+
+                        <div class="navigation-card-icon">
+
+                            <img
+                                src="./assets/icons/plane.svg"
+                                alt=""
+                                aria-hidden="true"
+                            >
+
+                        </div>
+
+
+                        <div class="navigation-card-copy">
+
+                            <span>
+                                PLAY
+                            </span>
+
+
+                            <h3>
+                                Flight
+                            </h3>
+
+
+                            <p>
+                                進入飛行房間，下注並在 Crash 前完成 Cash Out。
+                            </p>
+
+                        </div>
+
+
+                        <span
+                            class="navigation-card-arrow"
                             aria-hidden="true"
                         >
-                    </div>
-
-                    <div class="navigation-card-content">
-                        <span class="navigation-card-title">
-                            HISTORY
+                            →
                         </span>
 
-                        <span class="navigation-card-description">
-                            查看飛行與結算紀錄
-                        </span>
-                    </div>
-                </a>
+                    </a>
 
 
-                <!-- Statistics -->
-                <button
-                    id="statisticsButton"
-                    class="navigation-card"
-                    type="button"
-                >
-                    <div class="navigation-card-icon">
-                        <img
-                            src="./assets/icons/statistics.svg"
-                            alt=""
+                    <!-- -------------------------------------------------
+                         History
+                    -------------------------------------------------- -->
+                    <a
+                        class="navigation-card"
+                        href="./history.html"
+                    >
+
+                        <div class="navigation-card-icon">
+
+                            <img
+                                src="./assets/icons/history.svg"
+                                alt=""
+                                aria-hidden="true"
+                            >
+
+                        </div>
+
+
+                        <div class="navigation-card-copy">
+
+                            <span>
+                                RECORDS
+                            </span>
+
+
+                            <h3>
+                                History
+                            </h3>
+
+
+                            <p>
+                                查看最近開獎倍率、下注結果與單局詳細結算。
+                            </p>
+
+                        </div>
+
+
+                        <span
+                            class="navigation-card-arrow"
                             aria-hidden="true"
                         >
-                    </div>
-
-                    <div class="navigation-card-content">
-                        <span class="navigation-card-title">
-                            STATISTICS
+                            →
                         </span>
 
-                        <span class="navigation-card-description">
-                            查看個人遊戲統計
-                        </span>
-                    </div>
-                </button>
+                    </a>
 
 
-                <!-- Rules -->
-                <a
-                    class="navigation-card"
-                    href="./rules.html"
-                >
-                    <div class="navigation-card-icon">
-                        <img
-                            src="./assets/icons/rules.svg"
-                            alt=""
+                    <!-- -------------------------------------------------
+                         Rules
+                    -------------------------------------------------- -->
+                    <a
+                        class="navigation-card"
+                        href="./rules.html"
+                    >
+
+                        <div class="navigation-card-icon">
+
+                            <img
+                                src="./assets/icons/rules.svg"
+                                alt=""
+                                aria-hidden="true"
+                            >
+
+                        </div>
+
+
+                        <div class="navigation-card-copy">
+
+                            <span>
+                                GUIDE
+                            </span>
+
+
+                            <h3>
+                                Rules
+                            </h3>
+
+
+                            <p>
+                                查看下注、Cash Out、Crash 與登入獎勵規則。
+                            </p>
+
+                        </div>
+
+
+                        <span
+                            class="navigation-card-arrow"
                             aria-hidden="true"
                         >
-                    </div>
-
-                    <div class="navigation-card-content">
-                        <span class="navigation-card-title">
-                            RULES
+                            →
                         </span>
 
-                        <span class="navigation-card-description">
-                            查看完整遊戲規則
-                        </span>
-                    </div>
-                </a>
+                    </a>
 
-            </nav>
+
+                    <!-- -------------------------------------------------
+                         Statistics
+                    -------------------------------------------------- -->
+                    <button
+                        id="statisticsButton"
+                        class="navigation-card navigation-card-button"
+                        type="button"
+                    >
+
+                        <div class="navigation-card-icon">
+
+                            <img
+                                src="./assets/icons/statistics.svg"
+                                alt=""
+                                aria-hidden="true"
+                            >
+
+                        </div>
+
+
+                        <div class="navigation-card-copy">
+
+                            <span>
+                                PLAYER DATA
+                            </span>
+
+
+                            <h3>
+                                Statistics
+                            </h3>
+
+
+                            <p>
+                                查看總投注、Cash Out 成功率、淨損益與最高倍率。
+                            </p>
+
+                        </div>
+
+
+                        <span
+                            class="navigation-card-arrow"
+                            aria-hidden="true"
+                        >
+                            +
+                        </span>
+
+                    </button>
+
+                </div>
+
+            </section>
+
+
+            <!-- =================================================
+                 GAME INFO
+            ================================================== -->
+            <section class="lobby-info-section">
+
+                <div class="lobby-info-item">
+
+                    <img
+                        src="./assets/icons/bet.svg"
+                        alt=""
+                        aria-hidden="true"
+                    >
+
+
+                    <div>
+
+                        <span>
+                            BET
+                        </span>
+
+                        <strong>
+                            1 ～ 1,000,000
+                        </strong>
+
+                    </div>
+
+                </div>
+
+
+                <div class="lobby-info-item">
+
+                    <img
+                        src="./assets/icons/auto.svg"
+                        alt=""
+                        aria-hidden="true"
+                    >
+
+
+                    <div>
+
+                        <span>
+                            AUTO CASH OUT
+                        </span>
+
+                        <strong>
+                            1.01× ～ 999.99×
+                        </strong>
+
+                    </div>
+
+                </div>
+
+
+                <div class="lobby-info-item">
+
+                    <img
+                        src="./assets/icons/crash.svg"
+                        alt=""
+                        aria-hidden="true"
+                    >
+
+
+                    <div>
+
+                        <span>
+                            CRASH
+                        </span>
+
+                        <strong>
+                            Hidden Multiplier
+                        </strong>
+
+                    </div>
+
+                </div>
+
+
+                <div class="lobby-info-item">
+
+                    <img
+                        src="./assets/icons/coin.svg"
+                        alt=""
+                        aria-hidden="true"
+                    >
+
+
+                    <div>
+
+                        <span>
+                            CURRENCY
+                        </span>
+
+                        <strong>
+                            Virtual Coins
+                        </strong>
+
+                    </div>
+
+                </div>
+
+            </section>
 
         </main>
 
@@ -361,21 +796,35 @@
                 CG FLIGHT
             </span>
 
-            <span class="footer-divider">
+
+            <span class="lobby-footer-divider">
                 •
             </span>
+
 
             <span>
                 Virtual Coins Only
             </span>
 
-            <span class="footer-divider">
+
+            <span class="lobby-footer-divider">
                 •
             </span>
 
-            <span>
-                No Real-Money Gambling
+
+            <a href="./rules.html">
+                Rules
+            </a>
+
+
+            <span class="lobby-footer-divider">
+                •
             </span>
+
+
+            <a href="./history.html">
+                History
+            </a>
 
         </footer>
 
@@ -384,9 +833,14 @@
 
 
     <!-- =========================================================
-         README / WELCOME MODAL
-         每次 index.html 載入時都必須顯示。
-         不使用 localStorage 保存「已閱讀」狀態。
+         README MODAL
+
+         IMPORTANT:
+         - Must appear on every index.html load
+         - No close X
+         - No backdrop dismissal
+         - No Escape dismissal
+         - Only acceptReadmeButton unlocks Lobby
     ========================================================== -->
     <div
         id="readmeModal"
@@ -394,358 +848,131 @@
         role="dialog"
         aria-modal="true"
         aria-labelledby="readmeModalTitle"
-        aria-describedby="readmeModalDescription"
     >
 
         <div class="modal readme-modal">
 
-            <!-- Modal Header -->
+            <!-- Header -->
             <header class="readme-modal-header">
-
-                <img
-                    class="readme-modal-logo"
-                    src="./assets/images/logo-small.webp"
-                    alt="CG Flight"
-                >
 
                 <div class="readme-modal-heading">
 
-                    <span class="readme-modal-eyebrow">
-                        BEFORE TAKEOFF
-                    </span>
+                    <img
+                        src="./assets/icons/info.svg"
+                        alt=""
+                        aria-hidden="true"
+                    >
 
-                    <h2 id="readmeModalTitle">
-                        歡迎進入 CG Flight
-                    </h2>
+
+                    <div>
+
+                        <span>
+                            README
+                        </span>
+
+
+                        <h2 id="readmeModalTitle">
+                            CG Flight 遊戲說明
+                        </h2>
+
+                    </div>
 
                 </div>
 
             </header>
 
 
-            <!-- Modal Body -->
-            <div
-                id="readmeModalDescription"
-                class="readme-modal-body"
-            >
+            <!-- Body -->
+            <div class="readme-modal-body">
 
-                <!-- Introduction -->
                 <section class="readme-section">
 
                     <h3>
-                        遊戲說明
+                        關於 CG Flight
                     </h3>
 
-                    <p>
-                        CG Flight 是一款以飛機爬升、倍率增長與即時 Cash Out
-                        為核心玩法的瀏覽器 Crash Game。
-                        每局開始後，飛機會伴隨倍率持續爬升，
-                        玩家必須在飛機墜毀以前選擇 Cash Out。
-                    </p>
 
                     <p>
-                        Cash Out 時的倍率越高，可能取得的結算代幣越多；
-                        但如果飛機先行墜毀，尚未完成 Cash Out 的下注將直接失敗。
+                        CG Flight 是一款純前端製作的飛行倍率 Crash Game。每局飛行都會隨機產生隱藏的墜毀倍率，玩家可使用虛擬代幣下注，並在飛機墜毀前手動或自動 Cash Out。
                     </p>
 
                 </section>
 
 
-                <!-- How To Play -->
-                <section class="readme-section">
-
-                    <h3>
-                        基本玩法
-                    </h3>
-
-                    <ol class="readme-list">
-                        <li>
-                            在每局開始前設定下注金額。
-                        </li>
-
-                        <li>
-                            飛機起飛後，倍率會持續上升。
-                        </li>
-
-                        <li>
-                            玩家可以在墜毀前隨時 Cash Out。
-                        </li>
-
-                        <li>
-                            成功 Cash Out 後，將依當下倍率完成結算。
-                        </li>
-
-                        <li>
-                            若飛機在 Cash Out 前墜毀，該局下注判定失敗。
-                        </li>
-                    </ol>
-
-                </section>
-
-
-                <!-- Cash Out Formula -->
-                <section class="readme-section">
-
-                    <h3>
-                        結算方式
-                    </h3>
-
-                    <div class="readme-formula">
-                        結算金額 = 下注金額 × Cash Out 倍率
-                    </div>
-
-                    <p>
-                        例如下注 100 代幣並在 2.00× 時 Cash Out，
-                        則該局結算金額為 200 代幣。
-                    </p>
-
-                </section>
-
-
-                <!-- Auto Cash Out -->
-                <section class="readme-section">
-
-                    <h3>
-                        Auto Cash Out
-                    </h3>
-
-                    <p>
-                        玩家可以預先設定 Auto Cash Out 倍率。
-                        如果該局倍率成功抵達指定數值，
-                        系統會自動替玩家完成 Cash Out。
-                    </p>
-
-                    <p>
-                        如果飛機在到達設定倍率前墜毀，
-                        Auto Cash Out 不會觸發。
-                    </p>
-
-                </section>
-
-
-                <!-- First Login -->
-                <section class="readme-section">
-
-                    <h3>
-                        首次登入獎勵
-                    </h3>
-
-                    <p>
-                        玩家首次建立 CG Flight 本地資料時，
-                        可獲得
-                        <strong>10,000 代幣</strong>。
-                    </p>
-
-                    <p>
-                        首次登入同時會被計算為連續登入 Day 1，
-                        因此還會取得每日登入獎勵
-                        <strong>1,000 代幣</strong>。
-                    </p>
-
-                    <div class="readme-highlight">
-                        首次進入遊戲合計可獲得
-                        <strong>11,000 代幣</strong>
-                    </div>
-
-                </section>
-
-
-                <!-- Login Reward -->
-                <section class="readme-section">
-
-                    <h3>
-                        每日登入獎勵
-                    </h3>
-
-                    <p>
-                        每個自然日第一次登入 CG Flight，
-                        可獲得
-                        <strong>1,000 代幣</strong>。
-                    </p>
-
-                    <p>
-                        同一天內重新整理頁面、重新開啟遊戲或切換頁面，
-                        不會重複取得登入獎勵。
-                    </p>
-
-                </section>
-
-
-                <!-- Seven Day Streak -->
-                <section class="readme-section">
-
-                    <h3>
-                        七日連續登入
-                    </h3>
-
-                    <div class="login-cycle-table-wrapper">
-
-                        <table class="login-cycle-table">
-
-                            <thead>
-                                <tr>
-                                    <th>
-                                        DAY
-                                    </th>
-
-                                    <th>
-                                        DAILY
-                                    </th>
-
-                                    <th>
-                                        BONUS
-                                    </th>
-
-                                    <th>
-                                        TOTAL
-                                    </th>
-                                </tr>
-                            </thead>
-
-                            <tbody>
-                                <tr>
-                                    <td>1</td>
-                                    <td>1,000</td>
-                                    <td>—</td>
-                                    <td>1,000</td>
-                                </tr>
-
-                                <tr>
-                                    <td>2</td>
-                                    <td>1,000</td>
-                                    <td>—</td>
-                                    <td>1,000</td>
-                                </tr>
-
-                                <tr>
-                                    <td>3</td>
-                                    <td>1,000</td>
-                                    <td>—</td>
-                                    <td>1,000</td>
-                                </tr>
-
-                                <tr>
-                                    <td>4</td>
-                                    <td>1,000</td>
-                                    <td>—</td>
-                                    <td>1,000</td>
-                                </tr>
-
-                                <tr>
-                                    <td>5</td>
-                                    <td>1,000</td>
-                                    <td>—</td>
-                                    <td>1,000</td>
-                                </tr>
-
-                                <tr>
-                                    <td>6</td>
-                                    <td>1,000</td>
-                                    <td>—</td>
-                                    <td>1,000</td>
-                                </tr>
-
-                                <tr class="login-cycle-day-seven">
-                                    <td>7</td>
-                                    <td>1,000</td>
-                                    <td>7,777</td>
-                                    <td>8,777</td>
-                                </tr>
-                            </tbody>
-
-                        </table>
-
-                    </div>
-
-                    <p>
-                        完成 Day 7 後，下一個登入日會重新從 Day 1 開始。
-                        如果中途漏掉一天沒有登入，連續登入紀錄同樣會重置為 Day 1。
-                    </p>
-
-                </section>
-
-
-                <!-- Local Storage -->
                 <section class="readme-section">
 
                     <h3>
                         本地資料
                     </h3>
 
-                    <p>
-                        CG Flight 不需要建立線上帳號。
-                        玩家代幣、登入紀錄、遊戲歷史、統計資料與設定
-                        均保存在目前瀏覽器的 Local Storage 中。
-                    </p>
 
                     <p>
-                        更換瀏覽器、裝置、瀏覽器使用者設定檔，
-                        或清除網站資料，都可能導致遊戲資料無法繼續使用或被重置。
+                        玩家餘額、登入紀錄、Settings、Statistics 與 History 均儲存在目前瀏覽器的 Local Storage。清除網站資料、變更瀏覽器或更換裝置時，紀錄可能不會同步。
                     </p>
 
                 </section>
 
 
-                <!-- Disclaimer -->
-                <section class="readme-section readme-warning-section">
-
-                    <h3>
-                        重要說明
-                    </h3>
-
-                    <p>
-                        CG Flight 為單機娛樂與網頁程式開發專案。
-                        遊戲中的代幣僅為虛擬遊戲資源，
-                        不具有任何現實貨幣價值。
-                    </p>
-
-                    <p>
-                        本遊戲不提供現金儲值、現金提領、
-                        虛擬代幣兌現或任何真實金錢投注功能。
-                    </p>
-
-                </section>
-
-
-                <!-- README Reference -->
                 <section class="readme-section">
 
                     <h3>
-                        完整文件
+                        登入獎勵
                     </h3>
 
+
                     <p>
-                        完整專案說明亦可於專案根目錄的
-                        <code>README.md</code>
-                        中查看。
+                        首次建立本地資料可獲得 10,000 代幣，並同時領取 Day 1 每日登入獎勵 1,000，因此首次登入總餘額為 11,000。每日登入獎勵為 1,000，第 7 天另加 7,777。
                     </p>
 
                 </section>
+
+
+                <section class="readme-section">
+
+                    <h3>
+                        遊戲性質
+                    </h3>
+
+
+                    <p>
+                        本遊戲僅供前端開發、互動設計與娛樂用途，所有代幣皆為虛擬遊戲資料，不具任何現實貨幣價值，也不提供任何真實金錢兌換功能。
+                    </p>
+
+                </section>
+
+
+                <div class="readme-notice">
+
+                    <img
+                        src="./assets/icons/info.svg"
+                        alt=""
+                        aria-hidden="true"
+                    >
+
+
+                    <p>
+                        每次重新進入大廳都會再次顯示本說明。請閱讀後按下「我已閱讀並進入遊戲」以解鎖 Lobby 操作。
+                    </p>
+
+                </div>
 
             </div>
 
 
-            <!-- Modal Footer -->
+            <!-- Footer -->
             <footer class="readme-modal-footer">
-
-                <p class="readme-modal-notice">
-                    每次重新開啟 CG Flight 時，本說明都會再次顯示。
-                </p>
 
                 <button
                     id="acceptReadmeButton"
                     class="readme-accept-button"
                     type="button"
+                    autofocus
                 >
-                    <img
-                        src="./assets/icons/plane.svg"
-                        alt=""
-                        aria-hidden="true"
-                    >
 
                     <span>
-                        我已閱讀，進入 CG Flight
+                        我已閱讀並進入遊戲
                     </span>
+
                 </button>
 
             </footer>
@@ -757,54 +984,7 @@
 
 
     <!-- =========================================================
-         STATISTICS MODAL PLACEHOLDER
-         之後由 statistics.js / index.js 接入真正資料。
-    ========================================================== -->
-    <div
-        id="statisticsModal"
-        class="modal-overlay is-hidden"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="statisticsModalTitle"
-        hidden
-    >
-
-        <div class="modal statistics-modal">
-
-            <header class="statistics-modal-header">
-
-                <h2 id="statisticsModalTitle">
-                    Statistics
-                </h2>
-
-                <button
-                    id="closeStatisticsButton"
-                    class="modal-close-button"
-                    type="button"
-                    aria-label="關閉統計"
-                >
-                    ×
-                </button>
-
-            </header>
-
-
-            <div class="statistics-modal-body">
-
-                <div class="statistics-placeholder">
-                    統計系統將於後續遊戲邏輯完成後接入。
-                </div>
-
-            </div>
-
-        </div>
-
-    </div>
-
-
-
-    <!-- =========================================================
-         SETTINGS MODAL PLACEHOLDER
+         SETTINGS MODAL
     ========================================================== -->
     <div
         id="settingsModal"
@@ -823,6 +1003,7 @@
                     Settings
                 </h2>
 
+
                 <button
                     id="closeSettingsButton"
                     class="modal-close-button"
@@ -837,16 +1018,41 @@
 
             <div class="settings-modal-body">
 
+                <!-- -------------------------------------------------
+                     Sound
+                -------------------------------------------------- -->
                 <div class="settings-row">
 
-                    <div class="settings-row-label">
-                        Sound Effects
+                    <div class="settings-row-main">
+
+                        <img
+                            src="./assets/icons/sound-on.svg"
+                            alt=""
+                            aria-hidden="true"
+                        >
+
+
+                        <div>
+
+                            <span class="settings-row-label">
+                                Sound Effects
+                            </span>
+
+
+                            <small>
+                                下注、倒數、起飛、Cash Out 與 Crash 音效
+                            </small>
+
+                        </div>
+
                     </div>
+
 
                     <button
                         id="settingsSoundToggle"
                         class="settings-toggle-button"
                         type="button"
+                        aria-pressed="true"
                     >
                         ON
                     </button>
@@ -854,16 +1060,41 @@
                 </div>
 
 
+                <!-- -------------------------------------------------
+                     Music
+                -------------------------------------------------- -->
                 <div class="settings-row">
 
-                    <div class="settings-row-label">
-                        Background Music
+                    <div class="settings-row-main">
+
+                        <img
+                            src="./assets/icons/music-on.svg"
+                            alt=""
+                            aria-hidden="true"
+                        >
+
+
+                        <div>
+
+                            <span class="settings-row-label">
+                                Background Music
+                            </span>
+
+
+                            <small>
+                                Lobby 與 Flight 背景音樂
+                            </small>
+
+                        </div>
+
                     </div>
+
 
                     <button
                         id="settingsMusicToggle"
                         class="settings-toggle-button"
                         type="button"
+                        aria-pressed="true"
                     >
                         ON
                     </button>
@@ -879,27 +1110,83 @@
 
 
     <!-- =========================================================
-         AUDIO
-         JS 之後負責播放與狀態控制。
+         STATISTICS MODAL
+
+         IMPORTANT:
+         statistics-modal-body is populated dynamically
+         by js/pages/index.js.
     ========================================================== -->
-    <audio
-        id="lobbyBgm"
-        src="./assets/sounds/bgm/lobby.mp3"
-        preload="auto"
-        loop
-    ></audio>
+    <div
+        id="statisticsModal"
+        class="modal-overlay is-hidden"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="statisticsModalTitle"
+        hidden
+    >
 
-    <audio
-        id="clickSound"
-        src="./assets/sounds/sfx/click.mp3"
-        preload="auto"
-    ></audio>
+        <div class="modal statistics-modal">
 
-    <audio
-        id="loginRewardSound"
-        src="./assets/sounds/sfx/login-reward.mp3"
-        preload="auto"
-    ></audio>
+            <!-- Header -->
+            <header class="statistics-modal-header">
+
+                <div class="statistics-modal-heading">
+
+                    <img
+                        src="./assets/icons/statistics.svg"
+                        alt=""
+                        aria-hidden="true"
+                    >
+
+
+                    <div>
+
+                        <span>
+                            PLAYER DATA
+                        </span>
+
+
+                        <h2 id="statisticsModalTitle">
+                            Statistics
+                        </h2>
+
+                    </div>
+
+                </div>
+
+
+                <button
+                    id="closeStatisticsButton"
+                    class="modal-close-button"
+                    type="button"
+                    aria-label="關閉統計資料"
+                >
+                    ×
+                </button>
+
+            </header>
+
+
+            <!-- -------------------------------------------------
+                 Dynamic body
+            -------------------------------------------------- -->
+            <div class="statistics-modal-body">
+
+                <!--
+                    js/pages/index.js dynamically creates:
+
+                    .statistics-grid
+                    .statistics-item
+                    .statistics-item-label
+                    .statistics-item-value
+                -->
+
+            </div>
+
+        </div>
+
+    </div>
+
 
 
     <!-- =========================================================
