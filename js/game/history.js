@@ -2,45 +2,45 @@
    CG FLIGHT
    js/game/history.js
 
-   Persistent round history layer.
+   Persistent round history manager.
 
    Responsibilities:
-   - Save completed settlement records
+   - Persist canonical settlement records
    - Prevent duplicate round records
-   - Read complete history
-   - Get recent rounds
-   - Get recent 10 crash results
-   - Find round by roundId
-   - Provide detailed player settlement data
-   - Filter / paginate history
-   - Produce history summaries
-   - Automatically save SETTLEMENT_COMPLETE events
+   - Read all history
+   - Read recent Crash results
+   - Build History page summary
+   - Filter / paginate History
+   - Provide detailed single-round data
+   - Publish History change events
+   - Clear / remove History for development
 
    IMPORTANT:
-   This module does NOT:
-   - Perform settlement
-   - Update wallet
-   - Update statistics
-   - Generate crash results
+   history.js does NOT:
+   - Determine WIN / LOSS
+   - Calculate Settlement
+   - Modify Wallet
+   - Calculate aggregate Statistics
+
+   settlement.js creates the canonical record.
+   statistics.js separately records aggregates.
 ========================================================= */
+
 
 import {
     getData,
     updateData
 } from "../core/storage.js";
 
+
 import {
     ROUND_RESULT
 } from "./state.js";
 
-import {
-    subscribeToSettlement
-} from "./settlement.js";
 
 import {
     clone,
-    roundTo,
-    isFiniteNumber
+    roundTo
 } from "../core/utils.js";
 
 
@@ -50,26 +50,33 @@ import {
 
 const HISTORY_CONFIG = Object.freeze({
 
-    /*
-     Maximum number of completed rounds kept locally.
+    DEFAULT_RECENT_LIMIT:
+        10,
 
-     Older entries are removed from the beginning of the
-     array when this limit is exceeded.
-    */
-    MAX_HISTORY: 1000,
+    DEFAULT_PAGE_SIZE:
+        20,
 
-    /*
-     Default amount shown by history page.
-    */
-    DEFAULT_LIMIT: 20,
-
-    /*
-     Number of rounds used for the "recent results" bar.
-    */
-    RECENT_RESULTS_LIMIT: 10,
-
-    DECIMALS: 2
+    MAX_PAGE_SIZE:
+        100
 });
+
+
+/* =========================================================
+   HISTORY EVENT TYPES
+========================================================= */
+
+const HISTORY_EVENT_TYPES =
+    Object.freeze({
+
+        ENTRY_ADDED:
+            "ENTRY_ADDED",
+
+        ENTRY_REMOVED:
+            "ENTRY_REMOVED",
+
+        CLEARED:
+            "CLEARED"
+    });
 
 
 /* =========================================================
@@ -83,6 +90,7 @@ const historyListeners =
 function subscribeToHistory(
     listener
 ) {
+
     if (
         typeof listener !==
         "function"
@@ -92,11 +100,14 @@ function subscribeToHistory(
         );
     }
 
+
     historyListeners.add(
         listener
     );
 
+
     return function unsubscribe() {
+
         historyListeners.delete(
             listener
         );
@@ -105,20 +116,20 @@ function subscribeToHistory(
 
 
 /* =========================================================
-   NOTIFY HISTORY LISTENERS
+   NOTIFY
 ========================================================= */
 
 function notifyHistoryListeners(
-    type,
-    payload = {}
+    event
 ) {
-    const event = {
-        type,
+
+    const payload = {
+
+        ...clone(event),
 
         timestamp:
-            Date.now(),
-
-        ...payload
+            event.timestamp ??
+            Date.now()
     };
 
 
@@ -126,11 +137,15 @@ function notifyHistoryListeners(
         const listener
         of historyListeners
     ) {
+
         try {
+
             listener(
-                clone(event)
+                payload
             );
+
         } catch (error) {
+
             console.error(
                 "[CG Flight] History listener failed:",
                 error
@@ -141,48 +156,37 @@ function notifyHistoryListeners(
 
 
 /* =========================================================
-   BASIC HELPERS
+   BASIC NORMALIZERS
 ========================================================= */
 
-function normalizeNumber(
-    value,
-    fallback = 0
+function normalizeMoney(
+    value
 ) {
+
     const numeric =
         Number(value);
+
 
     if (
         !Number.isFinite(
             numeric
         )
     ) {
-        return fallback;
+        return 0;
     }
+
 
     return roundTo(
         numeric,
-        HISTORY_CONFIG.DECIMALS
+        2
     );
 }
 
 
-function normalizeNonNegativeNumber(
-    value,
-    fallback = 0
-) {
-    return Math.max(
-        0,
-        normalizeNumber(
-            value,
-            fallback
-        )
-    );
-}
-
-
-function normalizeTimestamp(
+function normalizeMultiplier(
     value
 ) {
+
     if (
         value === null ||
         value === undefined
@@ -190,423 +194,470 @@ function normalizeTimestamp(
         return null;
     }
 
-    if (
-        typeof value === "number" &&
-        Number.isFinite(value)
-    ) {
-        return value;
-    }
+
+    const numeric =
+        Number(value);
+
 
     if (
-        typeof value === "string"
+        !Number.isFinite(
+            numeric
+        )
     ) {
-        return value;
+        return null;
     }
 
-    return null;
+
+    return Math.max(
+        0,
+        roundTo(
+            numeric,
+            2
+        )
+    );
 }
 
 
 /* =========================================================
-   HISTORY DATA SANITIZER
+   VALID RESULT
 ========================================================= */
 
-function sanitizeHistoryArray(
-    history
+function isValidResult(
+    result
 ) {
-    if (!Array.isArray(history)) {
-        return [];
+
+    return Object.values(
+        ROUND_RESULT
+    ).includes(
+        result
+    );
+}
+
+
+/* =========================================================
+   VALID HISTORY ENTRY
+========================================================= */
+
+function isValidHistoryEntry(
+    entry
+) {
+
+    if (
+        !entry ||
+        typeof entry !==
+            "object"
+    ) {
+        return false;
     }
 
-    return history
-        .filter(
-            (entry) =>
-                entry &&
-                typeof entry === "object" &&
-                !Array.isArray(entry)
+
+    if (
+        typeof entry.roundId !==
+            "string" ||
+        entry.roundId.trim().length ===
+            0
+    ) {
+        return false;
+    }
+
+
+    if (
+        !isValidResult(
+            entry.result
         )
-        .map(
-            (entry) =>
-                clone(entry)
+    ) {
+        return false;
+    }
+
+
+    return true;
+}
+
+
+/* =========================================================
+   NORMALIZE HISTORY ENTRY
+
+   Important:
+   Preserve unknown fields.
+
+   statistics.js may later add:
+       statisticsRecorded
+       statisticsRecordedAt
+
+   Future modules may also add new detail fields.
+========================================================= */
+
+function normalizeHistoryEntry(
+    entry
+) {
+
+    if (
+        !isValidHistoryEntry(
+            entry
+        )
+    ) {
+        return null;
+    }
+
+
+    const normalized =
+        clone(
+            entry
         );
+
+
+    normalized.roundId =
+        String(
+            normalized.roundId
+        );
+
+
+    normalized.recordId =
+        normalized.recordId ??
+        null;
+
+
+    normalized.recordedAt =
+        normalized.recordedAt ??
+        new Date()
+            .toISOString();
+
+
+    normalized.result =
+        normalized.result;
+
+
+    normalized.crashMultiplier =
+        normalizeMultiplier(
+            normalized.crashMultiplier
+        );
+
+
+    normalized.betAmount =
+        normalizeMoney(
+            normalized.betAmount ??
+            normalized.bet?.amount
+        );
+
+
+    normalized.hasBet =
+        typeof normalized.hasBet ===
+            "boolean"
+            ? normalized.hasBet
+            : (
+                normalized.betAmount > 0 &&
+                ![
+                    ROUND_RESULT.NO_BET
+                ].includes(
+                    normalized.result
+                )
+            );
+
+
+    normalized.cashoutMultiplier =
+        normalizeMultiplier(
+            normalized.cashoutMultiplier ??
+            normalized.cashout?.multiplier
+        );
+
+
+    normalized.automaticCashout =
+        typeof normalized
+            .automaticCashout ===
+            "boolean"
+            ? normalized
+                .automaticCashout
+            : Boolean(
+                normalized.cashout
+                    ?.automatic
+            );
+
+
+    normalized.cashoutType =
+        normalized.cashoutType ??
+        normalized.cashout?.type ??
+        "NONE";
+
+
+    normalized.wagered =
+        normalizeMoney(
+            normalized.wagered ??
+            normalized.financial
+                ?.wagered
+        );
+
+
+    normalized.returned =
+        normalizeMoney(
+            normalized.returned ??
+            normalized.financial
+                ?.returned
+        );
+
+
+    normalized.profit =
+        normalizeMoney(
+            normalized.profit ??
+            normalized.financial
+                ?.profit
+        );
+
+
+    if (
+        typeof normalized
+            .statisticsRecorded !==
+            "boolean"
+    ) {
+        normalized.statisticsRecorded =
+            false;
+    }
+
+
+    normalized.statisticsRecordedAt =
+        normalized.statisticsRecordedAt ??
+        null;
+
+
+    return normalized;
 }
 
 
 /* =========================================================
    GET HISTORY
 
-   Stored order:
-   oldest -> newest
+   Storage order:
+       oldest -> newest
 
-   Public return order:
-   newest -> oldest
+   Public API default:
+       newest -> oldest
 ========================================================= */
 
-function getHistory() {
+function getHistory({
+    newestFirst = true
+} = {}) {
+
     const data =
         getData();
+
 
     const history =
-        sanitizeHistoryArray(
+        Array.isArray(
             data.history
-        );
-
-    return history
-        .slice()
-        .reverse();
-}
+        )
+            ? data.history
+            : [];
 
 
-/* =========================================================
-   GET HISTORY IN STORAGE ORDER
+    const normalized =
+        history
+            .map(
+                normalizeHistoryEntry
+            )
+            .filter(
+                Boolean
+            );
 
-   Intended mainly for internal operations.
-========================================================= */
 
-function getHistoryOldestFirst() {
-    const data =
-        getData();
+    if (
+        newestFirst
+    ) {
 
-    return sanitizeHistoryArray(
-        data.history
+        normalized.reverse();
+    }
+
+
+    return clone(
+        normalized
     );
 }
 
 
 /* =========================================================
-   VALIDATE SETTLEMENT
+   GET HISTORY COUNT
 ========================================================= */
 
-function validateSettlement(
-    settlement
-) {
-    if (
-        !settlement ||
-        typeof settlement !== "object" ||
-        Array.isArray(settlement)
-    ) {
-        return {
-            valid: false,
-            reason:
-                "INVALID_SETTLEMENT"
-        };
-    }
+function getHistoryCount() {
 
-
-    if (
-        typeof settlement.roundId !==
-            "string" ||
-        settlement.roundId.length === 0
-    ) {
-        return {
-            valid: false,
-            reason:
-                "INVALID_ROUND_ID"
-        };
-    }
-
-
-    const validResults =
-        Object.values(
-            ROUND_RESULT
-        );
-
-
-    if (
-        !validResults.includes(
-            settlement.result
-        ) ||
-        settlement.result ===
-            ROUND_RESULT.NONE
-    ) {
-        return {
-            valid: false,
-            reason:
-                "INVALID_RESULT"
-        };
-    }
-
-
-    if (
-        !isFiniteNumber(
-            Number(
-                settlement.crashMultiplier
-            )
-        )
-    ) {
-        return {
-            valid: false,
-            reason:
-                "INVALID_CRASH_MULTIPLIER"
-        };
-    }
-
-
-    return {
-        valid: true
-    };
+    return getHistory({
+        newestFirst:
+            false
+    }).length;
 }
 
 
 /* =========================================================
-   BUILD HISTORY ENTRY
-
-   Settlement is already normalized by settlement.js.
-
-   History adds:
-   - recordedAt
-   - compact top-level lookup fields
+   FIND ROUND
 ========================================================= */
 
-function buildHistoryEntry(
-    settlement
-) {
-    const crashMultiplier =
-        normalizeNonNegativeNumber(
-            settlement.crashMultiplier
-        );
-
-    const betAmount =
-        normalizeNonNegativeNumber(
-            settlement.bet
-                ?.amount
-        );
-
-    const cashoutMultiplier =
-        settlement.cashout
-            ?.multiplier === null ||
-        settlement.cashout
-            ?.multiplier === undefined
-            ? null
-            : normalizeNonNegativeNumber(
-                settlement.cashout
-                    .multiplier
-            );
-
-    const returned =
-        normalizeNonNegativeNumber(
-            settlement.financial
-                ?.returned
-        );
-
-    const profit =
-        normalizeNumber(
-            settlement.financial
-                ?.profit
-        );
-
-
-    return {
-
-        roundId:
-            settlement.roundId,
-
-        recordedAt:
-            new Date()
-                .toISOString(),
-
-        result:
-            settlement.result,
-
-        crashMultiplier,
-
-        /*
-         Compact lookup fields.
-
-         These make history.html rendering easier without
-         having to traverse the full settlement record.
-        */
-
-        betAmount,
-
-        cashoutMultiplier,
-
-        returned,
-
-        profit,
-
-        automaticCashout:
-            Boolean(
-                settlement.cashout
-                    ?.automatic
-            ),
-
-        /*
-         Full normalized settlement record.
-
-         This is the authoritative single-round detail.
-        */
-
-        settlement:
-            clone(
-                settlement
-            )
-    };
-}
-
-
-/* =========================================================
-   ROUND EXISTS
-========================================================= */
-
-function hasRound(
+function getHistoryEntryByRoundId(
     roundId
 ) {
+
     if (
         typeof roundId !==
             "string" ||
-        roundId.length === 0
+        roundId.trim().length ===
+            0
     ) {
-        return false;
+        return null;
     }
 
 
-    const history =
-        getHistoryOldestFirst();
+    const data =
+        getData();
 
 
-    return history.some(
-        (entry) =>
-            entry.roundId ===
-            roundId
+    const entry =
+        Array.isArray(
+            data.history
+        )
+            ? data.history.find(
+                (item) =>
+                    item &&
+                    item.roundId ===
+                        roundId
+            )
+            : null;
+
+
+    if (!entry) {
+        return null;
+    }
+
+
+    return clone(
+        normalizeHistoryEntry(
+            entry
+        )
     );
 }
 
 
 /* =========================================================
-   SAVE SETTLEMENT
-
-   Main persistence operation.
+   HAS ROUND
 ========================================================= */
 
-function recordHistory(
-    settlement
+function hasHistoryEntry(
+    roundId
 ) {
-    const validation =
-        validateSettlement(
-            settlement
+
+    return (
+        getHistoryEntryByRoundId(
+            roundId
+        ) !== null
+    );
+}
+
+
+/* =========================================================
+   ADD HISTORY ENTRY
+
+   Canonical write API used by settlement.js.
+
+   Idempotent by roundId:
+       same roundId -> successful no-op
+========================================================= */
+
+function addHistoryEntry(
+    record
+) {
+
+    const normalized =
+        normalizeHistoryEntry(
+            record
         );
 
 
-    if (!validation.valid) {
+    if (!normalized) {
+
         return {
             success: false,
 
-            recorded: false,
-
             reason:
-                validation.reason
+                "INVALID_HISTORY_ENTRY"
         };
     }
-
-
-    const roundId =
-        settlement.roundId;
 
 
     let result =
         null;
 
 
-    const savedData =
+    const saved =
         updateData(
             (data) => {
 
-                const history =
-                    sanitizeHistoryArray(
+                if (
+                    !Array.isArray(
                         data.history
-                    );
+                    )
+                ) {
+                    data.history = [];
+                }
 
 
-                /* -----------------------------------------
-                   Persistent duplicate protection
-
-                   Unlike the statistics session Set, this
-                   survives page reloads because we inspect
-                   existing Local Storage history.
-                ------------------------------------------ */
-
-                const duplicate =
-                    history.find(
+                const existing =
+                    data.history.find(
                         (entry) =>
+                            entry &&
                             entry.roundId ===
-                            roundId
+                                normalized.roundId
                     );
 
 
-                if (duplicate) {
+                if (existing) {
+
                     result = {
+
                         success: true,
 
-                        recorded: false,
+                        added:
+                            false,
 
                         reason:
-                            "ROUND_ALREADY_RECORDED",
+                            "ALREADY_EXISTS",
 
                         entry:
                             clone(
-                                duplicate
+                                existing
                             )
                     };
 
-                    data.history =
-                        history;
 
                     return;
                 }
 
 
-                const entry =
-                    buildHistoryEntry(
-                        settlement
-                    );
-
-
-                history.push(
-                    entry
+                data.history.push(
+                    clone(
+                        normalized
+                    )
                 );
 
 
-                /* -----------------------------------------
-                   Enforce storage limit
-                ------------------------------------------ */
-
-                if (
-                    history.length >
-                    HISTORY_CONFIG.MAX_HISTORY
-                ) {
-                    data.history =
-                        history.slice(
-                            -HISTORY_CONFIG.MAX_HISTORY
-                        );
-                } else {
-                    data.history =
-                        history;
-                }
-
-
                 result = {
+
                     success: true,
 
-                    recorded: true,
+                    added:
+                        true,
 
                     entry:
                         clone(
-                            entry
+                            normalized
                         ),
 
-                    totalEntries:
+                    count:
                         data.history.length
                 };
             }
         );
 
 
-    if (!savedData) {
+    if (!saved) {
+
         return {
             success: false,
-
-            recorded: false,
 
             reason:
                 "STORAGE_WRITE_FAILED"
@@ -614,436 +665,558 @@ function recordHistory(
     }
 
 
+    if (!result) {
+
+        return {
+            success: false,
+
+            reason:
+                "UNKNOWN_HISTORY_ERROR"
+        };
+    }
+
+
     if (
-        result &&
-        result.recorded
+        result.added
     ) {
-        notifyHistoryListeners(
-            "HISTORY_RECORDED",
-            {
-                entry:
-                    result.entry,
 
-                totalEntries:
-                    result.totalEntries
-            }
-        );
-    }
+        notifyHistoryListeners({
 
+            type:
+                HISTORY_EVENT_TYPES
+                    .ENTRY_ADDED,
 
-    return result;
-}
-
-
-/* =========================================================
-   GET ROUND BY ID
-========================================================= */
-
-function getRoundById(
-    roundId
-) {
-    if (
-        typeof roundId !==
-            "string" ||
-        roundId.length === 0
-    ) {
-        return null;
-    }
-
-
-    const history =
-        getHistoryOldestFirst();
-
-
-    const entry =
-        history.find(
-            (item) =>
-                item.roundId ===
-                roundId
-        );
-
-
-    return entry
-        ? clone(entry)
-        : null;
-}
-
-
-/* =========================================================
-   GET SETTLEMENT BY ROUND ID
-
-   Returns only the detailed settlement record.
-========================================================= */
-
-function getSettlementByRoundId(
-    roundId
-) {
-    const entry =
-        getRoundById(
-            roundId
-        );
-
-
-    if (!entry) {
-        return null;
-    }
-
-
-    return entry.settlement
-        ? clone(
-            entry.settlement
-        )
-        : null;
-}
-
-
-/* =========================================================
-   RECENT HISTORY
-========================================================= */
-
-function getRecentHistory(
-    limit =
-        HISTORY_CONFIG.DEFAULT_LIMIT
-) {
-    const safeLimit =
-        Number.isInteger(limit)
-            ? Math.max(
-                0,
-                limit
-            )
-            : HISTORY_CONFIG.DEFAULT_LIMIT;
-
-
-    return getHistory()
-        .slice(
-            0,
-            safeLimit
-        );
-}
-
-
-/* =========================================================
-   RECENT 10 RESULTS
-
-   Intended for the small recent-results strip.
-
-   Returns newest first.
-========================================================= */
-
-function getRecentResults(
-    limit =
-        HISTORY_CONFIG.RECENT_RESULTS_LIMIT
-) {
-    const safeLimit =
-        Number.isInteger(limit)
-            ? Math.max(
-                0,
-                limit
-            )
-            : HISTORY_CONFIG
-                .RECENT_RESULTS_LIMIT;
-
-
-    return getRecentHistory(
-        safeLimit
-    ).map(
-        (entry) => ({
             roundId:
-                entry.roundId,
+                normalized.roundId,
 
-            crashMultiplier:
-                normalizeNonNegativeNumber(
-                    entry.crashMultiplier
+            entry:
+                clone(
+                    normalized
                 ),
 
-            recordedAt:
-                entry.recordedAt,
+            count:
+                result.count
+        });
+    }
 
-            result:
-                entry.result
-        })
+
+    return clone(
+        result
     );
 }
 
 
 /* =========================================================
-   GET PLAYER ROUND DETAIL
+   GET RECENT RESULTS
 
-   Optimized for the history detail modal/page.
+   Used by:
+   - game page recent 10
+   - history page recent 10
 ========================================================= */
 
-function getPlayerRoundDetail(
-    roundId
+function getRecentResults(
+    limit =
+        HISTORY_CONFIG
+            .DEFAULT_RECENT_LIMIT
 ) {
-    const entry =
-        getRoundById(
-            roundId
+
+    const numericLimit =
+        Math.max(
+            0,
+            Math.trunc(
+                Number(limit) ||
+                0
+            )
         );
 
 
-    if (!entry) {
-        return null;
+    if (
+        numericLimit === 0
+    ) {
+        return [];
     }
 
 
-    const settlement =
-        entry.settlement ?? {};
+    return getHistory({
+        newestFirst:
+            true
+    })
+        .slice(
+            0,
+            numericLimit
+        )
+        .map(
+            (entry) => ({
+
+                roundId:
+                    entry.roundId,
+
+                recordedAt:
+                    entry.recordedAt,
+
+                result:
+                    entry.result,
+
+                crashMultiplier:
+                    entry
+                        .crashMultiplier,
+
+                betAmount:
+                    entry.betAmount,
+
+                cashoutMultiplier:
+                    entry
+                        .cashoutMultiplier,
+
+                automaticCashout:
+                    entry
+                        .automaticCashout,
+
+                returned:
+                    entry.returned,
+
+                profit:
+                    entry.profit
+            })
+        );
+}
 
 
-    const bet =
-        settlement.bet ?? {};
+/* =========================================================
+   HISTORY SUMMARY
 
-    const cashout =
-        settlement.cashout ?? {};
+   History page summary is separate from global player
+   Statistics.
 
-    const financial =
-        settlement.financial ?? {};
+   This summarizes persisted round records directly.
+========================================================= */
 
-    const timing =
-        settlement.timing ?? {};
+function getHistorySummary() {
+
+    const history =
+        getHistory({
+            newestFirst:
+                false
+        });
 
 
-    return {
+    if (
+        history.length === 0
+    ) {
 
-        roundId:
-            entry.roundId,
+        return {
 
-        recordedAt:
-            entry.recordedAt,
+            totalRounds:
+                0,
 
-        result:
-            entry.result,
+            winCount:
+                0,
 
-        crashMultiplier:
-            normalizeNonNegativeNumber(
-                entry.crashMultiplier
-            ),
+            lossCount:
+                0,
+
+            refundCount:
+                0,
+
+            noBetCount:
+                0,
+
+            highestCrashMultiplier:
+                0,
+
+            averageCrashMultiplier:
+                0,
+
+            highestCashoutMultiplier:
+                0,
+
+            averageCashoutMultiplier:
+                0,
+
+            totalWagered:
+                0,
+
+            totalReturned:
+                0,
+
+            netProfit:
+                0
+        };
+    }
+
+
+    let winCount =
+        0;
+
+
+    let lossCount =
+        0;
+
+
+    let refundCount =
+        0;
+
+
+    let noBetCount =
+        0;
+
+
+    let crashTotal =
+        0;
+
+
+    let crashCount =
+        0;
+
+
+    let highestCrashMultiplier =
+        0;
+
+
+    let cashoutTotal =
+        0;
+
+
+    let cashoutCount =
+        0;
+
+
+    let highestCashoutMultiplier =
+        0;
+
+
+    let totalWagered =
+        0;
+
+
+    let totalReturned =
+        0;
+
+
+    let netProfit =
+        0;
+
+
+    for (
+        const entry
+        of history
+    ) {
+
+        switch (
+            entry.result
+        ) {
+
+            case ROUND_RESULT.WIN:
+
+                winCount +=
+                    1;
+
+                break;
+
+
+            case ROUND_RESULT.LOSS:
+
+                lossCount +=
+                    1;
+
+                break;
+
+
+            case ROUND_RESULT.REFUND:
+
+                refundCount +=
+                    1;
+
+                break;
+
+
+            case ROUND_RESULT.NO_BET:
+
+                noBetCount +=
+                    1;
+
+                break;
+
+
+            default:
+                break;
+        }
 
 
         /* -------------------------------------------------
-           Player bet
+           Crash
         -------------------------------------------------- */
 
-        bet: {
-            status:
-                bet.status ?? null,
-
-            amount:
-                normalizeNonNegativeNumber(
-                    bet.amount
-                ),
-
-            placedAt:
-                normalizeTimestamp(
-                    bet.placedAt
-                ),
-
-            activatedAt:
-                normalizeTimestamp(
-                    bet.activatedAt
-                ),
-
-            cancelledAt:
-                normalizeTimestamp(
-                    bet.cancelledAt
+        if (
+            Number.isFinite(
+                Number(
+                    entry.crashMultiplier
                 )
-        },
+            )
+        ) {
+
+            const crash =
+                Number(
+                    entry.crashMultiplier
+                );
 
 
-        /* -------------------------------------------------
-           Auto Cash Out
-        -------------------------------------------------- */
+            crashTotal +=
+                crash;
 
-        autoCashout: {
-            enabled:
-                Boolean(
-                    settlement.autoCashout
-                        ?.enabled
-                ),
 
-            targetMultiplier:
-                settlement.autoCashout
-                    ?.targetMultiplier ??
-                null
-        },
+            crashCount +=
+                1;
+
+
+            highestCrashMultiplier =
+                Math.max(
+                    highestCrashMultiplier,
+                    crash
+                );
+        }
 
 
         /* -------------------------------------------------
            Cash Out
         -------------------------------------------------- */
 
-        cashout: {
-            completed:
-                Boolean(
-                    cashout.completed
-                ),
-
-            automatic:
-                Boolean(
-                    cashout.automatic
-                ),
-
-            multiplier:
-                cashout.multiplier ??
-                null,
-
-            amount:
-                normalizeNonNegativeNumber(
-                    cashout.amount
-                ),
-
-            profit:
-                normalizeNumber(
-                    cashout.profit
-                ),
-
-            completedAt:
-                normalizeTimestamp(
-                    cashout.completedAt
+        if (
+            Number.isFinite(
+                Number(
+                    entry.cashoutMultiplier
                 )
-        },
+            )
+        ) {
+
+            const cashout =
+                Number(
+                    entry.cashoutMultiplier
+                );
 
 
-        /* -------------------------------------------------
-           Financial result
-        -------------------------------------------------- */
-
-        financial: {
-            wagered:
-                normalizeNonNegativeNumber(
-                    financial.wagered
-                ),
-
-            returned:
-                normalizeNonNegativeNumber(
-                    financial.returned
-                ),
-
-            profit:
-                normalizeNumber(
-                    financial.profit
-                ),
-
-            won:
-                Boolean(
-                    financial.won
-                ),
-
-            lost:
-                Boolean(
-                    financial.lost
-                ),
-
-            neutral:
-                Boolean(
-                    financial.neutral
-                )
-        },
+            cashoutTotal +=
+                cashout;
 
 
-        /* -------------------------------------------------
-           Flight timing
-        -------------------------------------------------- */
+            cashoutCount +=
+                1;
 
-        timing: {
-            flightStartedAt:
-                normalizeTimestamp(
-                    timing.flightStartedAt
-                ),
 
-            crashedAt:
-                normalizeTimestamp(
-                    timing.crashedAt
-                ),
-
-            flightElapsedMs:
+            highestCashoutMultiplier =
                 Math.max(
-                    0,
-                    Number(
-                        timing.flightElapsedMs
-                    ) || 0
-                )
+                    highestCashoutMultiplier,
+                    cashout
+                );
         }
+
+
+        totalWagered =
+            roundTo(
+                totalWagered +
+                normalizeMoney(
+                    entry.wagered
+                ),
+                2
+            );
+
+
+        totalReturned =
+            roundTo(
+                totalReturned +
+                normalizeMoney(
+                    entry.returned
+                ),
+                2
+            );
+
+
+        netProfit =
+            roundTo(
+                netProfit +
+                normalizeMoney(
+                    entry.profit
+                ),
+                2
+            );
+    }
+
+
+    return {
+
+        totalRounds:
+            history.length,
+
+        winCount,
+
+        lossCount,
+
+        refundCount,
+
+        noBetCount,
+
+        highestCrashMultiplier:
+            roundTo(
+                highestCrashMultiplier,
+                2
+            ),
+
+        averageCrashMultiplier:
+            crashCount > 0
+                ? roundTo(
+                    crashTotal /
+                    crashCount,
+                    2
+                )
+                : 0,
+
+        highestCashoutMultiplier:
+            roundTo(
+                highestCashoutMultiplier,
+                2
+            ),
+
+        averageCashoutMultiplier:
+            cashoutCount > 0
+                ? roundTo(
+                    cashoutTotal /
+                    cashoutCount,
+                    2
+                )
+                : 0,
+
+        totalWagered:
+            roundTo(
+                totalWagered,
+                2
+            ),
+
+        totalReturned:
+            roundTo(
+                totalReturned,
+                2
+            ),
+
+        netProfit:
+            roundTo(
+                netProfit,
+                2
+            )
     };
 }
 
 
 /* =========================================================
-   FILTER HISTORY
-
-   Supported:
-   - result
-   - hasBet
-   - cashoutType
+   NORMALIZE RESULT FILTER
 ========================================================= */
 
-function filterHistory({
-    result = null,
-    hasBet = null,
-    cashoutType = null
-} = {}) {
-    let history =
-        getHistory();
+function normalizeResultFilter(
+    value
+) {
 
-
-    /* -----------------------------------------------------
-       Result filter
-    ----------------------------------------------------- */
-
-    if (result !== null) {
-        history =
-            history.filter(
-                (entry) =>
-                    entry.result ===
-                    result
-            );
+    if (
+        value === null ||
+        value === undefined ||
+        value === ""
+    ) {
+        return null;
     }
 
 
-    /* -----------------------------------------------------
-       Has-bet filter
-    ----------------------------------------------------- */
+    return isValidResult(
+        value
+    )
+        ? value
+        : null;
+}
+
+
+/* =========================================================
+   NORMALIZE CASHOUT FILTER
+========================================================= */
+
+function normalizeCashoutTypeFilter(
+    value
+) {
 
     if (
-        typeof hasBet ===
-        "boolean"
+        value === null ||
+        value === undefined ||
+        value === ""
     ) {
-        history =
-            history.filter(
-                (entry) => {
-
-                    const amount =
-                        normalizeNonNegativeNumber(
-                            entry.betAmount
-                        );
-
-                    return hasBet
-                        ? amount > 0
-                        : amount === 0;
-                }
-            );
+        return null;
     }
 
 
-    /* -----------------------------------------------------
-       Cashout type
+    const normalized =
+        String(
+            value
+        ).toUpperCase();
 
-       "MANUAL"
-       "AUTO"
-       "NONE"
-    ----------------------------------------------------- */
 
     if (
-        cashoutType ===
-        "MANUAL"
+        [
+            "AUTO",
+            "MANUAL",
+            "NONE"
+        ].includes(
+            normalized
+        )
     ) {
-        history =
-            history.filter(
-                (entry) =>
-                    entry.cashoutMultiplier !==
-                        null &&
-                    !entry.automaticCashout
-            );
+        return normalized;
+    }
+
+
+    return null;
+}
+
+
+/* =========================================================
+   MATCH HAS BET
+
+   History UI supports:
+       true
+       false
+       null -> all
+========================================================= */
+
+function matchesHasBet(
+    entry,
+    hasBet
+) {
+
+    if (
+        hasBet === null ||
+        hasBet === undefined
+    ) {
+        return true;
+    }
+
+
+    return (
+        Boolean(
+            entry.hasBet
+        ) ===
+        Boolean(
+            hasBet
+        )
+    );
+}
+
+
+/* =========================================================
+   MATCH CASHOUT TYPE
+========================================================= */
+
+function matchesCashoutType(
+    entry,
+    cashoutType
+) {
+
+    if (
+        cashoutType === null
+    ) {
+        return true;
     }
 
 
@@ -1051,13 +1224,27 @@ function filterHistory({
         cashoutType ===
         "AUTO"
     ) {
-        history =
-            history.filter(
-                (entry) =>
-                    entry.cashoutMultiplier !==
-                        null &&
-                    entry.automaticCashout
-            );
+
+        return (
+            entry.cashoutMultiplier !==
+                null &&
+            entry.automaticCashout ===
+                true
+        );
+    }
+
+
+    if (
+        cashoutType ===
+        "MANUAL"
+    ) {
+
+        return (
+            entry.cashoutMultiplier !==
+                null &&
+            entry.automaticCashout ===
+                false
+        );
     }
 
 
@@ -1065,51 +1252,114 @@ function filterHistory({
         cashoutType ===
         "NONE"
     ) {
-        history =
-            history.filter(
-                (entry) =>
-                    entry.cashoutMultiplier ===
-                    null
-            );
+
+        return (
+            entry.cashoutMultiplier ===
+            null
+        );
     }
 
 
-    return history;
+    return true;
 }
 
 
 /* =========================================================
-   PAGINATE HISTORY
+   FILTER HISTORY
+========================================================= */
+
+function filterHistory({
+    result = null,
+    hasBet = null,
+    cashoutType = null
+} = {}) {
+
+    const normalizedResult =
+        normalizeResultFilter(
+            result
+        );
+
+
+    const normalizedCashoutType =
+        normalizeCashoutTypeFilter(
+            cashoutType
+        );
+
+
+    return getHistory({
+        newestFirst:
+            true
+    })
+        .filter(
+            (entry) => {
+
+                if (
+                    normalizedResult !==
+                        null &&
+                    entry.result !==
+                        normalizedResult
+                ) {
+                    return false;
+                }
+
+
+                if (
+                    !matchesHasBet(
+                        entry,
+                        hasBet
+                    )
+                ) {
+                    return false;
+                }
+
+
+                if (
+                    !matchesCashoutType(
+                        entry,
+                        normalizedCashoutType
+                    )
+                ) {
+                    return false;
+                }
+
+
+                return true;
+            }
+        );
+}
+
+
+/* =========================================================
+   GET HISTORY PAGE
 ========================================================= */
 
 function getHistoryPage({
     page = 1,
     pageSize =
-        HISTORY_CONFIG.DEFAULT_LIMIT,
+        HISTORY_CONFIG
+            .DEFAULT_PAGE_SIZE,
 
     result = null,
     hasBet = null,
     cashoutType = null
 } = {}) {
-    const safePage =
-        Number.isInteger(page)
-            ? Math.max(
-                1,
-                page
-            )
-            : 1;
-
 
     const safePageSize =
-        Number.isInteger(
-            pageSize
-        )
-            ? Math.max(
-                1,
-                pageSize
+        Math.max(
+            1,
+            Math.min(
+                HISTORY_CONFIG
+                    .MAX_PAGE_SIZE,
+
+                Math.trunc(
+                    Number(
+                        pageSize
+                    ) ||
+                    HISTORY_CONFIG
+                        .DEFAULT_PAGE_SIZE
+                )
             )
-            : HISTORY_CONFIG
-                .DEFAULT_LIMIT;
+        );
 
 
     const filtered =
@@ -1134,32 +1384,47 @@ function getHistoryPage({
         );
 
 
-    const resolvedPage =
+    const requestedPage =
+        Math.max(
+            1,
+            Math.trunc(
+                Number(page) ||
+                1
+            )
+        );
+
+
+    const safePage =
         Math.min(
-            safePage,
+            requestedPage,
             totalPages
         );
 
 
     const start =
         (
-            resolvedPage - 1
+            safePage -
+            1
         ) *
+        safePageSize;
+
+
+    const end =
+        start +
         safePageSize;
 
 
     const items =
         filtered.slice(
             start,
-            start +
-                safePageSize
+            end
         );
 
 
     return {
 
         page:
-            resolvedPage,
+            safePage,
 
         pageSize:
             safePageSize,
@@ -1169,221 +1434,325 @@ function getHistoryPage({
         totalPages,
 
         hasPrevious:
-            resolvedPage > 1,
+            safePage > 1,
 
         hasNext:
-            resolvedPage <
+            safePage <
             totalPages,
 
-        items
+        items:
+            clone(
+                items
+            ),
+
+        filters: {
+
+            result:
+                normalizeResultFilter(
+                    result
+                ),
+
+            hasBet:
+                hasBet === null ||
+                hasBet === undefined
+                    ? null
+                    : Boolean(
+                        hasBet
+                    ),
+
+            cashoutType:
+                normalizeCashoutTypeFilter(
+                    cashoutType
+                )
+        }
     };
 }
 
 
 /* =========================================================
-   HISTORY SUMMARY
+   GET PLAYER ROUND DETAIL
+
+   Used by pages/history.js Modal.
+
+   The canonical History record already contains the detail
+   structure created by settlement.js.
+
+   This helper provides a stable UI contract.
 ========================================================= */
 
-function getHistorySummary() {
-    const history =
-        getHistory();
+function getPlayerRoundDetail(
+    roundId
+) {
+
+    const entry =
+        getHistoryEntryByRoundId(
+            roundId
+        );
 
 
-    let winCount = 0;
-    let lossCount = 0;
-    let refundCount = 0;
-    let noBetCount = 0;
-
-    let manualCashoutCount = 0;
-    let autoCashoutCount = 0;
-
-    let totalCrashMultiplier = 0;
-
-    let highestCrashMultiplier = 0;
-
-    let lowestCrashMultiplier =
-        Infinity;
-
-    let totalCashoutMultiplier = 0;
-
-    let cashoutMultiplierCount = 0;
-
-
-    for (
-        const entry
-        of history
-    ) {
-
-        /* -------------------------------------------------
-           Result
-        -------------------------------------------------- */
-
-        if (
-            entry.result ===
-            ROUND_RESULT.WIN
-        ) {
-            winCount += 1;
-        }
-
-        if (
-            entry.result ===
-            ROUND_RESULT.LOSS
-        ) {
-            lossCount += 1;
-        }
-
-        if (
-            entry.result ===
-            ROUND_RESULT.REFUND
-        ) {
-            refundCount += 1;
-        }
-
-        if (
-            entry.result ===
-            ROUND_RESULT.NO_BET
-        ) {
-            noBetCount += 1;
-        }
-
-
-        /* -------------------------------------------------
-           Crash multiplier
-        -------------------------------------------------- */
-
-        const crashMultiplier =
-            normalizeNonNegativeNumber(
-                entry.crashMultiplier
-            );
-
-
-        totalCrashMultiplier +=
-            crashMultiplier;
-
-
-        highestCrashMultiplier =
-            Math.max(
-                highestCrashMultiplier,
-                crashMultiplier
-            );
-
-
-        lowestCrashMultiplier =
-            Math.min(
-                lowestCrashMultiplier,
-                crashMultiplier
-            );
-
-
-        /* -------------------------------------------------
-           Cashout multiplier
-        -------------------------------------------------- */
-
-        if (
-            entry.cashoutMultiplier !==
-            null
-        ) {
-            const cashoutMultiplier =
-                normalizeNonNegativeNumber(
-                    entry.cashoutMultiplier
-                );
-
-
-            totalCashoutMultiplier +=
-                cashoutMultiplier;
-
-
-            cashoutMultiplierCount +=
-                1;
-
-
-            if (
-                entry.automaticCashout
-            ) {
-                autoCashoutCount += 1;
-            } else {
-                manualCashoutCount += 1;
-            }
-        }
+    if (!entry) {
+        return null;
     }
-
-
-    const totalRounds =
-        history.length;
-
-
-    const averageCrashMultiplier =
-        totalRounds > 0
-            ? roundTo(
-                totalCrashMultiplier /
-                totalRounds,
-                2
-            )
-            : 0;
-
-
-    const averageCashoutMultiplier =
-        cashoutMultiplierCount > 0
-            ? roundTo(
-                totalCashoutMultiplier /
-                cashoutMultiplierCount,
-                2
-            )
-            : 0;
 
 
     return {
 
-        totalRounds,
+        /* -------------------------------------------------
+           Identity / result
+        -------------------------------------------------- */
 
-        winCount,
+        recordId:
+            entry.recordId,
 
-        lossCount,
+        roundId:
+            entry.roundId,
 
-        refundCount,
+        recordedAt:
+            entry.recordedAt,
 
-        noBetCount,
+        result:
+            entry.result,
 
-        manualCashoutCount,
+        crashMultiplier:
+            entry.crashMultiplier,
 
-        autoCashoutCount,
 
-        highestCrashMultiplier:
-            roundTo(
-                highestCrashMultiplier,
-                2
-            ),
+        /* -------------------------------------------------
+           Bet
+        -------------------------------------------------- */
 
-        lowestCrashMultiplier:
-            lowestCrashMultiplier ===
-            Infinity
-                ? 0
-                : roundTo(
-                    lowestCrashMultiplier,
-                    2
+        bet: {
+
+            status:
+                entry.bet?.status ??
+                entry.betStatus ??
+                null,
+
+            amount:
+                normalizeMoney(
+                    entry.bet?.amount ??
+                    entry.betAmount
                 ),
 
-        averageCrashMultiplier,
+            placedAt:
+                entry.bet?.placedAt ??
+                null,
 
-        averageCashoutMultiplier
+            activatedAt:
+                entry.bet
+                    ?.activatedAt ??
+                null,
+
+            cancelledAt:
+                entry.bet
+                    ?.cancelledAt ??
+                null,
+
+            refundedAt:
+                entry.bet
+                    ?.refundedAt ??
+                null,
+
+            transactionId:
+                entry.bet
+                    ?.transactionId ??
+                null,
+
+            refundTransactionId:
+                entry.bet
+                    ?.refundTransactionId ??
+                null
+        },
+
+
+        /* -------------------------------------------------
+           Auto Cash Out
+        -------------------------------------------------- */
+
+        autoCashout: {
+
+            enabled:
+                Boolean(
+                    entry.autoCashout
+                        ?.enabled
+                ),
+
+            targetMultiplier:
+                normalizeMultiplier(
+                    entry.autoCashout
+                        ?.targetMultiplier
+                )
+        },
+
+
+        /* -------------------------------------------------
+           Cash Out
+        -------------------------------------------------- */
+
+        cashout: {
+
+            completed:
+                Boolean(
+                    entry.cashout
+                        ?.completed ??
+                    (
+                        entry
+                            .cashoutMultiplier !==
+                        null
+                    )
+                ),
+
+            automatic:
+                Boolean(
+                    entry.cashout
+                        ?.automatic ??
+                    entry
+                        .automaticCashout
+                ),
+
+            type:
+                entry.cashout?.type ??
+                entry.cashoutType ??
+                "NONE",
+
+            multiplier:
+                normalizeMultiplier(
+                    entry.cashout
+                        ?.multiplier ??
+                    entry
+                        .cashoutMultiplier
+                ),
+
+            amount:
+                normalizeMoney(
+                    entry.cashout
+                        ?.amount ??
+                    entry.returned
+                ),
+
+            profit:
+                normalizeMoney(
+                    entry.cashout
+                        ?.profit ??
+                    entry.profit
+                ),
+
+            completedAt:
+                entry.cashout
+                    ?.completedAt ??
+                null,
+
+            transactionId:
+                entry.cashout
+                    ?.transactionId ??
+                null
+        },
+
+
+        /* -------------------------------------------------
+           Financial
+        -------------------------------------------------- */
+
+        financial: {
+
+            wagered:
+                normalizeMoney(
+                    entry.financial
+                        ?.wagered ??
+                    entry.wagered
+                ),
+
+            returned:
+                normalizeMoney(
+                    entry.financial
+                        ?.returned ??
+                    entry.returned
+                ),
+
+            profit:
+                normalizeMoney(
+                    entry.financial
+                        ?.profit ??
+                    entry.profit
+                )
+        },
+
+
+        /* -------------------------------------------------
+           Timing
+        -------------------------------------------------- */
+
+        timing: {
+
+            roundCreatedAt:
+                entry.timing
+                    ?.roundCreatedAt ??
+                null,
+
+            flightStartedAt:
+                entry.timing
+                    ?.flightStartedAt ??
+                null,
+
+            crashedAt:
+                entry.timing
+                    ?.crashedAt ??
+                null,
+
+            flightElapsedMs:
+                Math.max(
+                    0,
+                    Number(
+                        entry.timing
+                            ?.flightElapsedMs
+                    ) || 0
+                ),
+
+            settledAt:
+                entry.timing
+                    ?.settledAt ??
+                entry.recordedAt
+        },
+
+
+        /* -------------------------------------------------
+           Statistics marker
+        -------------------------------------------------- */
+
+        statisticsRecorded:
+            entry.statisticsRecorded ===
+            true,
+
+        statisticsRecordedAt:
+            entry.statisticsRecordedAt ??
+            null
     };
 }
 
 
 /* =========================================================
-   DELETE SINGLE HISTORY ENTRY
+   REMOVE HISTORY ENTRY
 
-   Primarily useful for development/debug tools.
+   Development / repair helper.
+
+   IMPORTANT:
+   Removing a History entry does NOT automatically reverse
+   aggregate Statistics.
+
+   If used, call rebuildStatisticsFromHistory() afterwards.
 ========================================================= */
 
-function deleteHistoryEntry(
+function removeHistoryEntry(
     roundId
 ) {
+
     if (
         typeof roundId !==
             "string" ||
-        roundId.length === 0
+        roundId.trim().length ===
+            0
     ) {
+
         return {
             success: false,
 
@@ -1393,74 +1762,60 @@ function deleteHistoryEntry(
     }
 
 
-    let result =
+    let removed =
         null;
 
 
-    const savedData =
+    const saved =
         updateData(
             (data) => {
 
-                const history =
-                    sanitizeHistoryArray(
+                if (
+                    !Array.isArray(
                         data.history
-                    );
+                    )
+                ) {
+                    return;
+                }
 
 
                 const index =
-                    history.findIndex(
+                    data.history.findIndex(
                         (entry) =>
+                            entry &&
                             entry.roundId ===
-                            roundId
+                                roundId
                     );
 
 
-                if (index < 0) {
-                    result = {
-                        success: false,
-
-                        deleted: false,
-
-                        reason:
-                            "ROUND_NOT_FOUND"
-                    };
-
+                if (
+                    index < 0
+                ) {
                     return;
                 }
 
 
                 const [
-                    deleted
+                    entry
                 ] =
-                    history.splice(
+                    data.history.splice(
                         index,
                         1
                     );
 
 
-                data.history =
-                    history;
-
-
-                result = {
-                    success: true,
-
-                    deleted: true,
-
-                    entry:
-                        clone(
-                            deleted
-                        )
-                };
+                removed =
+                    clone(
+                        entry
+                    );
             }
         );
 
 
-    if (!savedData) {
+    if (!saved) {
+
         return {
             success: false,
-
-            deleted: false,
 
             reason:
                 "STORAGE_WRITE_FAILED"
@@ -1468,49 +1823,71 @@ function deleteHistoryEntry(
     }
 
 
-    if (
-        result &&
-        result.deleted
-    ) {
-        notifyHistoryListeners(
-            "HISTORY_DELETED",
-            {
-                entry:
-                    result.entry
-            }
-        );
+    if (!removed) {
+
+        return {
+            success: false,
+
+            reason:
+                "HISTORY_ENTRY_NOT_FOUND"
+        };
     }
 
 
-    return result;
+    notifyHistoryListeners({
+
+        type:
+            HISTORY_EVENT_TYPES
+                .ENTRY_REMOVED,
+
+        roundId,
+
+        entry:
+            clone(
+                removed
+            )
+    });
+
+
+    return {
+
+        success: true,
+
+        entry:
+            clone(
+                removed
+            )
+    };
 }
 
 
 /* =========================================================
    CLEAR HISTORY
 
-   Does NOT reset:
-   - wallet
-   - login
-   - statistics
+   Development helper.
 
-   This distinction is intentional.
+   IMPORTANT:
+   Does NOT automatically clear Statistics.
 ========================================================= */
 
 function clearHistory() {
-    const previous =
-        getHistory();
+
+    const previousCount =
+        getHistoryCount();
 
 
-    const savedData =
+    const saved =
         updateData(
             (data) => {
-                data.history = [];
+
+                data.history =
+                    [];
             }
         );
 
 
-    if (!savedData) {
+    if (!saved) {
+
         return {
             success: false,
 
@@ -1520,56 +1897,60 @@ function clearHistory() {
     }
 
 
-    notifyHistoryListeners(
-        "HISTORY_CLEARED",
-        {
-            removedCount:
-                previous.length
-        }
-    );
+    notifyHistoryListeners({
+
+        type:
+            HISTORY_EVENT_TYPES
+                .CLEARED,
+
+        previousCount
+    });
 
 
     return {
+
         success: true,
 
-        removedCount:
-            previous.length
+        previousCount,
+
+        count:
+            0
     };
 }
 
 
 /* =========================================================
-   AUTO SAVE SETTLEMENT
-
-   settlement.js emits SETTLEMENT_COMPLETE once the round has
-   fully transitioned into ENDED.
+   COMPATIBILITY ALIASES
 ========================================================= */
 
-subscribeToSettlement(
-    (event) => {
+function addHistory(
+    record
+) {
 
-        if (
-            event.type !==
-            "SETTLEMENT_COMPLETE"
-        ) {
-            return;
-        }
-
-
-        const result =
-            recordHistory(
-                event.settlement
-            );
+    return addHistoryEntry(
+        record
+    );
+}
 
 
-        if (!result.success) {
-            console.error(
-                "[CG Flight] History write failed:",
-                result
-            );
-        }
-    }
-);
+function getRecentHistory(
+    limit
+) {
+
+    return getRecentResults(
+        limit
+    );
+}
+
+
+function getRoundDetail(
+    roundId
+) {
+
+    return getPlayerRoundDetail(
+        roundId
+    );
+}
 
 
 /* =========================================================
@@ -1578,26 +1959,31 @@ subscribeToSettlement(
 
 export {
     HISTORY_CONFIG,
+    HISTORY_EVENT_TYPES,
 
     getHistory,
-    getRecentHistory,
+    getHistoryCount,
+
+    getHistoryEntryByRoundId,
+    hasHistoryEntry,
+
+    addHistoryEntry,
+
     getRecentResults,
-
-    hasRound,
-
-    getRoundById,
-    getSettlementByRoundId,
-    getPlayerRoundDetail,
+    getHistorySummary,
 
     filterHistory,
     getHistoryPage,
 
-    getHistorySummary,
+    getPlayerRoundDetail,
 
-    recordHistory,
-
-    deleteHistoryEntry,
+    removeHistoryEntry,
     clearHistory,
 
-    subscribeToHistory
+    subscribeToHistory,
+
+    /* Compatibility */
+    addHistory,
+    getRecentHistory,
+    getRoundDetail
 };
