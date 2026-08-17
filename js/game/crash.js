@@ -2,34 +2,35 @@
    CG FLIGHT
    js/game/crash.js
 
-   Crash multiplier generator.
+   Crash Point generator.
 
    Responsibilities:
-   - Generate crash multiplier for each round
-   - Store crash multiplier in round state
-   - Check whether current multiplier has reached crash point
-   - Provide crash probability helpers
-   - Provide simulation/debug helpers
+   - Generate one hidden Crash Point for each round
+   - Apply configured mathematical distribution
+   - Enforce minimum / maximum multiplier
+   - Normalize multiplier precision
+   - Optionally assign Crash Point into state.js
+   - Provide validation / probability helpers
 
    IMPORTANT:
-   This module does NOT:
-   - Animate the multiplier
-   - Control flight timing
-   - Deduct bets
-   - Perform cashout
-   - Perform settlement
+   crash.js does NOT:
+   - Start flight
+   - Animate multiplier
+   - Modify Wallet
+   - Perform Cash Out
+   - Perform Settlement
 ========================================================= */
 
-import {
-    setCrashMultiplier,
-    getCrashMultiplier
-} from "./state.js";
 
 import {
     clamp,
-    roundTo,
-    isFiniteNumber
+    roundTo
 } from "../core/utils.js";
+
+import {
+    getState,
+    setCrashMultiplier
+} from "./state.js";
 
 
 /* =========================================================
@@ -39,246 +40,298 @@ import {
 const CRASH_CONFIG = Object.freeze({
 
     /*
-     Lowest possible crash multiplier.
+     Smallest possible Crash Point.
 
-     1.00 means the plane can crash effectively
-     immediately after takeoff.
+     1.00× means a round may crash essentially immediately.
     */
-    MIN_MULTIPLIER: 1.00,
+    MIN_MULTIPLIER:
+        1.00,
 
 
     /*
-     Hard upper limit.
-
-     Prevents extreme values from producing impractically
-     long rounds.
+     Hard ceiling used to prevent extreme/infinite values
+     from producing impractical local-game rounds.
     */
-    MAX_MULTIPLIER: 1000.00,
+    MAX_MULTIPLIER:
+        1000.00,
 
 
     /*
-     Statistical house edge.
-
-     0.03 = 3%
-
-     This affects the crash distribution.
+     Crash Point precision.
     */
-    HOUSE_EDGE: 0.03,
+    DECIMALS:
+        2,
 
 
     /*
-     Stored/displayed precision.
+     Distribution factor.
+
+     The generator uses an inverse distribution similar to
+     common crash-game mathematics:
+
+         crash ≈ FACTOR / random
+
+     A lower factor causes more low Crash Points.
+
+     This is a virtual-coin local game, so this value is a
+     gameplay tuning parameter rather than real-money RTP.
     */
-    DECIMALS: 2
+    DISTRIBUTION_FACTOR:
+        0.96
 });
 
 
 /* =========================================================
-   RANDOM SOURCE
+   CRYPTO RANDOM
 
    Prefer crypto.getRandomValues() when available.
-
-   This is still client-side randomness and should not be
-   treated as server-authoritative or tamper-proof.
+   Fall back to Math.random() only when required.
 ========================================================= */
 
 function getRandomUnit() {
+
     if (
         typeof crypto !== "undefined" &&
-        typeof crypto.getRandomValues === "function"
+        typeof crypto.getRandomValues ===
+            "function"
     ) {
-        const array =
+
+        const values =
             new Uint32Array(1);
 
+
         crypto.getRandomValues(
-            array
+            values
         );
 
-        /*
-         Divide by 2^32.
 
-         Result:
-         0 <= value < 1
+        /*
+         Produces:
+             0 <= value < 1
         */
 
         return (
-            array[0] /
+            values[0] /
             4294967296
         );
     }
+
 
     return Math.random();
 }
 
 
 /* =========================================================
-   CRASH FORMULA
+   SAFE RANDOM
 
-   Uses a heavy-tailed inverse distribution.
-
-   Approximate survival probability:
-
-       P(crash >= x)
-       ≈ (1 - houseEdge) / x
-
-   This naturally creates:
-   - many low multipliers
-   - fewer medium multipliers
-   - rare high multipliers
+   Prevent exactly zero because the inverse distribution
+   divides by the random value.
 ========================================================= */
 
-function calculateCrashMultiplier(
-    randomValue,
-    {
-        houseEdge =
-            CRASH_CONFIG.HOUSE_EDGE,
+function getSafeRandomUnit() {
 
-        minMultiplier =
-            CRASH_CONFIG.MIN_MULTIPLIER,
+    const value =
+        getRandomUnit();
 
-        maxMultiplier =
-            CRASH_CONFIG.MAX_MULTIPLIER,
 
-        decimals =
-            CRASH_CONFIG.DECIMALS
-    } = {}
+    return Math.max(
+        Number.EPSILON,
+        Math.min(
+            1 - Number.EPSILON,
+            value
+        )
+    );
+}
+
+
+/* =========================================================
+   NORMALIZE CRASH POINT
+========================================================= */
+
+function normalizeCrashPoint(
+    multiplier
 ) {
-    const safeRandom =
+
+    const numeric =
+        Number(multiplier);
+
+
+    if (
+        !Number.isFinite(
+            numeric
+        )
+    ) {
+        return CRASH_CONFIG
+            .MIN_MULTIPLIER;
+    }
+
+
+    const clamped =
         clamp(
-            randomValue,
-            0,
-            0.999999999999
-        );
-
-    const safeEdge =
-        clamp(
-            houseEdge,
-            0,
-            0.99
-        );
-
-    const safeMin =
-        Math.max(
-            1,
-            Number(minMultiplier) || 1
-        );
-
-    const safeMax =
-        Math.max(
-            safeMin,
-            Number(maxMultiplier) ||
-                safeMin
-        );
-
-
-    /*
-     Prevent division by zero.
-
-     Using (1 - random) gives a Pareto-like tail.
-    */
-
-    const denominator =
-        1 - safeRandom;
-
-
-    const rawMultiplier =
-        (
-            1 - safeEdge
-        ) /
-        denominator;
-
-
-    const boundedMultiplier =
-        clamp(
-            rawMultiplier,
-            safeMin,
-            safeMax
+            numeric,
+            CRASH_CONFIG
+                .MIN_MULTIPLIER,
+            CRASH_CONFIG
+                .MAX_MULTIPLIER
         );
 
 
     return roundTo(
-        boundedMultiplier,
-        decimals
+        clamped,
+        CRASH_CONFIG
+            .DECIMALS
     );
 }
 
 
 /* =========================================================
-   GENERATE CRASH MULTIPLIER
+   GENERATE RAW CRASH POINT
 
-   Pure generator.
-   Does NOT modify game state.
+   Distribution:
+
+       x = factor / (1 - r)
+
+   where:
+       r ∈ [0, 1)
+
+   This creates:
+   - many low multipliers
+   - fewer medium multipliers
+   - rare high multipliers
+
+   Example shape:
+       low Crash Points     common
+       2×+                  less common
+       10×+                 uncommon
+       100×+                rare
+
+   Hard MAX_MULTIPLIER prevents impractical outliers.
 ========================================================= */
 
-function generateCrashMultiplier(
-    options = {}
+function generateRawCrashPoint(
+    randomValue =
+        getSafeRandomUnit()
 ) {
-    const randomValue =
-        getRandomUnit();
 
-    return calculateCrashMultiplier(
-        randomValue,
-        options
+    const r =
+        clamp(
+            Number(randomValue),
+            Number.EPSILON,
+            1 - Number.EPSILON
+        );
+
+
+    const raw =
+        CRASH_CONFIG
+            .DISTRIBUTION_FACTOR /
+        (
+            1 - r
+        );
+
+
+    return raw;
+}
+
+
+/* =========================================================
+   GENERATE CRASH POINT
+========================================================= */
+
+function generateCrashPoint() {
+
+    const raw =
+        generateRawCrashPoint();
+
+
+    return normalizeCrashPoint(
+        raw
     );
 }
 
 
 /* =========================================================
-   PREPARE ROUND CRASH POINT
+   GENERATE + ASSIGN TO CURRENT ROUND
 
-   Generates and stores the crash multiplier in state.js.
-
-   Recommended usage:
-       prepareCrashPoint();
-
-   This should normally happen once before the round starts.
+   Recommended entry point for flight.js.
 ========================================================= */
 
-function prepareCrashPoint(
-    options = {}
-) {
-    const existing =
-        getCrashMultiplier();
+function prepareCrashPoint() {
+
+    const state =
+        getState();
+
 
     if (
-        existing !== null &&
-        existing !== undefined
+        !state.roundId
     ) {
+
         return {
             success: false,
+
             reason:
-                "CRASH_POINT_ALREADY_SET",
+                "NO_ACTIVE_ROUND",
 
             crashMultiplier:
-                existing
+                null
+        };
+    }
+
+
+    /*
+     Avoid regenerating a Crash Point if this round already
+     has one.
+    */
+
+    if (
+        state.flight
+            .crashMultiplier !==
+        null
+    ) {
+
+        return {
+            success: true,
+
+            generated:
+                false,
+
+            crashMultiplier:
+                state.flight
+                    .crashMultiplier
         };
     }
 
 
     const crashMultiplier =
-        generateCrashMultiplier(
-            options
-        );
+        generateCrashPoint();
 
 
-    const stateResult =
+    const result =
         setCrashMultiplier(
             crashMultiplier
         );
 
 
-    if (!stateResult.success) {
+    if (
+        !result.success
+    ) {
+
         return {
             success: false,
 
             reason:
-                stateResult.reason
+                result.reason,
+
+            crashMultiplier:
+                null
         };
     }
 
 
     return {
         success: true,
+
+        generated:
+            true,
 
         crashMultiplier
     };
@@ -286,92 +339,69 @@ function prepareCrashPoint(
 
 
 /* =========================================================
-   FORCE CRASH POINT
-
-   Intended for:
-   - development
-   - deterministic testing
-   - replay/debug tools
-
-   Example:
-       forceCrashPoint(2.00);
+   VALIDATE CRASH POINT
 ========================================================= */
 
-function forceCrashPoint(
+function isValidCrashPoint(
     multiplier
 ) {
-    if (
-        !isFiniteNumber(
-            multiplier
-        ) ||
-        multiplier <
-            CRASH_CONFIG.MIN_MULTIPLIER
-    ) {
-        return {
-            success: false,
-            reason:
-                "INVALID_CRASH_MULTIPLIER"
-        };
-    }
+
+    const numeric =
+        Number(multiplier);
 
 
-    const bounded =
-        roundTo(
-            clamp(
-                multiplier,
-                CRASH_CONFIG.MIN_MULTIPLIER,
-                CRASH_CONFIG.MAX_MULTIPLIER
-            ),
-            CRASH_CONFIG.DECIMALS
-        );
-
-
-    const result =
-        setCrashMultiplier(
-            bounded
-        );
-
-
-    if (!result.success) {
-        return result;
-    }
-
-
-    return {
-        success: true,
-
-        crashMultiplier:
-            bounded
-    };
+    return (
+        Number.isFinite(
+            numeric
+        ) &&
+        numeric >=
+            CRASH_CONFIG
+                .MIN_MULTIPLIER &&
+        numeric <=
+            CRASH_CONFIG
+                .MAX_MULTIPLIER
+    );
 }
 
 
 /* =========================================================
-   CHECK CRASH
+   CASH OUT BOUNDARY
 
-   Returns true once current multiplier is equal to or above
-   the prepared crash multiplier.
+   Core rule:
+
+       cashoutMultiplier < crashMultiplier
+
+   Equality is a LOSS.
+
+   Example:
+       Crash 2.00
+       Cash Out 1.99 -> success
+       Cash Out 2.00 -> failure
 ========================================================= */
 
-function hasReachedCrashPoint(
-    currentMultiplier
+function canCashoutBeforeCrash(
+    cashoutMultiplier,
+    crashMultiplier
 ) {
-    if (
-        !isFiniteNumber(
-            currentMultiplier
-        )
-    ) {
-        return false;
-    }
+
+    const cashout =
+        Number(
+            cashoutMultiplier
+        );
 
 
-    const crashMultiplier =
-        getCrashMultiplier();
-
-
-    if (
-        !isFiniteNumber(
+    const crash =
+        Number(
             crashMultiplier
+        );
+
+
+    if (
+        !Number.isFinite(
+            cashout
+        ) ||
+        !Number.isFinite(
+            crash
         )
     ) {
         return false;
@@ -379,131 +409,115 @@ function hasReachedCrashPoint(
 
 
     return (
-        currentMultiplier >=
-        crashMultiplier
+        cashout <
+        crash
     );
 }
 
 
 /* =========================================================
-   GET REMAINING MULTIPLIER DISTANCE
+   HAS CRASHED
+
+   Used by flight.js.
+
+   Once current displayed multiplier reaches OR exceeds the
+   hidden Crash Point, the round must crash.
 ========================================================= */
 
-function getCrashDistance(
-    currentMultiplier
+function hasReachedCrashPoint(
+    currentMultiplier,
+    crashMultiplier
 ) {
-    const crashMultiplier =
-        getCrashMultiplier();
 
-
-    if (
-        !isFiniteNumber(
-            crashMultiplier
-        ) ||
-        !isFiniteNumber(
+    const current =
+        Number(
             currentMultiplier
+        );
+
+
+    const crash =
+        Number(
+            crashMultiplier
+        );
+
+
+    if (
+        !Number.isFinite(
+            current
+        ) ||
+        !Number.isFinite(
+            crash
         )
     ) {
-        return null;
+        return false;
     }
 
 
-    return roundTo(
-        Math.max(
-            0,
-            crashMultiplier -
-                currentMultiplier
-        ),
-        CRASH_CONFIG.DECIMALS
+    return (
+        current >=
+        crash
     );
 }
 
 
 /* =========================================================
-   CRASH RANGE LABEL
+   APPROXIMATE SURVIVAL PROBABILITY
 
-   Useful later for statistics/history UI.
-========================================================= */
+   For development/testing only.
 
-function getCrashRange(
-    multiplier
-) {
-    if (
-        !isFiniteNumber(
-            multiplier
-        )
-    ) {
-        return "UNKNOWN";
-    }
+   Returns approximate probability that the generated Crash
+   Point is GREATER THAN the target multiplier.
 
-    if (multiplier < 1.20) {
-        return "VERY_LOW";
-    }
-
-    if (multiplier < 2.00) {
-        return "LOW";
-    }
-
-    if (multiplier < 5.00) {
-        return "MEDIUM";
-    }
-
-    if (multiplier < 10.00) {
-        return "HIGH";
-    }
-
-    if (multiplier < 50.00) {
-        return "VERY_HIGH";
-    }
-
-    return "EXTREME";
-}
-
-
-/* =========================================================
-   THEORETICAL SURVIVAL PROBABILITY
-
-   Approximate probability that the generated multiplier
-   reaches at least the requested target.
+   Based on the configured inverse distribution before
+   ceiling effects.
 
    Example:
-       getSurvivalProbability(2)
+       getApproximateSurvivalProbability(2)
+       -> about 0.48
 ========================================================= */
 
-function getSurvivalProbability(
-    targetMultiplier,
-    {
-        houseEdge =
-            CRASH_CONFIG.HOUSE_EDGE
-    } = {}
+function getApproximateSurvivalProbability(
+    targetMultiplier
 ) {
-    if (
-        !isFiniteNumber(
+
+    const target =
+        Number(
             targetMultiplier
+        );
+
+
+    if (
+        !Number.isFinite(
+            target
         ) ||
-        targetMultiplier < 1
+        target <= 0
     ) {
         return 0;
     }
 
 
-    const safeEdge =
-        clamp(
-            houseEdge,
-            0,
-            0.99
-        );
+    if (
+        target <
+        CRASH_CONFIG
+            .MIN_MULTIPLIER
+    ) {
+        return 1;
+    }
 
 
-    const probability =
-        (
-            1 - safeEdge
-        ) /
-        targetMultiplier;
+    if (
+        target >=
+        CRASH_CONFIG
+            .MAX_MULTIPLIER
+    ) {
+        return 0;
+    }
 
 
     return clamp(
-        probability,
+        CRASH_CONFIG
+            .DISTRIBUTION_FACTOR /
+        target,
         0,
         1
     );
@@ -511,155 +525,191 @@ function getSurvivalProbability(
 
 
 /* =========================================================
-   THEORETICAL CRASH-BELOW PROBABILITY
+   APPROXIMATE CRASH-BELOW PROBABILITY
+
+   Complement of survival probability.
 ========================================================= */
 
-function getCrashBelowProbability(
-    targetMultiplier,
-    options = {}
+function getApproximateCrashProbability(
+    targetMultiplier
 ) {
+
     return (
         1 -
-        getSurvivalProbability(
-            targetMultiplier,
-            options
+        getApproximateSurvivalProbability(
+            targetMultiplier
         )
     );
 }
 
 
 /* =========================================================
-   SIMULATION
+   DEVELOPMENT SAMPLE
 
-   Development/debug helper.
-
-   Does NOT modify round state.
+   Useful in browser console for checking distribution.
 
    Example:
-       simulateCrashes(10000)
+       sampleCrashDistribution(10000)
 ========================================================= */
 
-function simulateCrashes(
-    count = 1000,
-    options = {}
+function sampleCrashDistribution(
+    count = 10000
 ) {
-    const safeCount =
-        Number.isInteger(count)
-            ? clamp(
-                count,
-                1,
-                100000
+
+    const sampleCount =
+        Math.max(
+            1,
+            Math.floor(
+                Number(count) ||
+                1
             )
-            : 1000;
-
-
-    const results = [];
-
-    let total = 0;
-
-    let minimum =
-        Infinity;
-
-    let maximum =
-        -Infinity;
+        );
 
 
     const buckets = {
-        under1_2: 0,
-        under2: 0,
-        under5: 0,
-        under10: 0,
-        under50: 0,
-        over50: 0
+
+        total:
+            sampleCount,
+
+        below1_20:
+            0,
+
+        below1_50:
+            0,
+
+        below2:
+            0,
+
+        from2To5:
+            0,
+
+        from5To10:
+            0,
+
+        from10To100:
+            0,
+
+        above100:
+            0,
+
+        highest:
+            0,
+
+        average:
+            0
     };
+
+
+    let sum =
+        0;
 
 
     for (
         let i = 0;
-        i < safeCount;
+        i < sampleCount;
         i += 1
     ) {
-        const multiplier =
-            generateCrashMultiplier(
-                options
-            );
+
+        const value =
+            generateCrashPoint();
 
 
-        results.push(
-            multiplier
-        );
+        sum += value;
 
 
-        total +=
-            multiplier;
-
-
-        minimum =
-            Math.min(
-                minimum,
-                multiplier
-            );
-
-
-        maximum =
+        buckets.highest =
             Math.max(
-                maximum,
-                multiplier
+                buckets.highest,
+                value
             );
 
 
-        if (multiplier < 1.20) {
-            buckets.under1_2 += 1;
-        } else if (
-            multiplier < 2
+        if (
+            value < 1.2
         ) {
-            buckets.under2 += 1;
-        } else if (
-            multiplier < 5
+            buckets.below1_20 +=
+                1;
+        }
+
+
+        if (
+            value < 1.5
         ) {
-            buckets.under5 += 1;
-        } else if (
-            multiplier < 10
+            buckets.below1_50 +=
+                1;
+        }
+
+
+        if (
+            value < 2
         ) {
-            buckets.under10 += 1;
+
+            buckets.below2 +=
+                1;
+
         } else if (
-            multiplier < 50
+            value < 5
         ) {
-            buckets.under50 += 1;
+
+            buckets.from2To5 +=
+                1;
+
+        } else if (
+            value < 10
+        ) {
+
+            buckets.from5To10 +=
+                1;
+
+        } else if (
+            value < 100
+        ) {
+
+            buckets.from10To100 +=
+                1;
+
         } else {
-            buckets.over50 += 1;
+
+            buckets.above100 +=
+                1;
         }
     }
 
 
-    const average =
+    buckets.average =
         roundTo(
-            total /
-                safeCount,
-            4
+            sum /
+            sampleCount,
+            2
         );
 
 
-    return {
-        count:
-            safeCount,
+    return buckets;
+}
 
-        minimum:
-            minimum === Infinity
-                ? 0
-                : minimum,
 
-        maximum:
-            maximum === -Infinity
-                ? 0
-                : maximum,
+/* =========================================================
+   COMPATIBILITY ALIASES
 
-        average,
+   Keep these temporarily while the remaining game modules
+   are being audited.
+========================================================= */
 
-        buckets,
+function createCrashPoint() {
 
-        results
-    };
+    return generateCrashPoint();
+}
+
+
+function generateCrashMultiplier() {
+
+    return generateCrashPoint();
+}
+
+
+function initializeCrashPoint() {
+
+    return prepareCrashPoint();
 }
 
 
@@ -670,19 +720,23 @@ function simulateCrashes(
 export {
     CRASH_CONFIG,
 
-    calculateCrashMultiplier,
-    generateCrashMultiplier,
-
+    generateRawCrashPoint,
+    generateCrashPoint,
     prepareCrashPoint,
-    forceCrashPoint,
 
+    normalizeCrashPoint,
+    isValidCrashPoint,
+
+    canCashoutBeforeCrash,
     hasReachedCrashPoint,
-    getCrashDistance,
 
-    getCrashRange,
+    getApproximateSurvivalProbability,
+    getApproximateCrashProbability,
 
-    getSurvivalProbability,
-    getCrashBelowProbability,
+    sampleCrashDistribution,
 
-    simulateCrashes
+    /* Compatibility */
+    createCrashPoint,
+    generateCrashMultiplier,
+    initializeCrashPoint
 };
