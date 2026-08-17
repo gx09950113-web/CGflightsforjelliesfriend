@@ -1,0 +1,1266 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <meta
+        name="description"
+        content="CG Flight - 飛行倍率 Crash Game"
+    >
+
+    <title>CG Flight - Game</title>
+
+    <!-- Favicon -->
+    <link
+        rel="icon"
+        type="image/png"
+        href="./assets/images/favicon.png"
+    >
+
+    <!-- Styles -->
+    <link
+        rel="stylesheet"
+        href="./css/common.css"
+    >
+
+    <link
+        rel="stylesheet"
+        href="./css/game.css"
+    >
+</head>
+
+<body>
+
+    <!-- =========================================================
+         APP
+    ========================================================== -->
+    <div
+        id="app"
+        class="app game-app"
+    >
+
+        <!-- =====================================================
+             BACKGROUND
+        ====================================================== -->
+        <div
+            class="game-background"
+            aria-hidden="true"
+        ></div>
+
+
+        <!-- =====================================================
+             HEADER
+        ====================================================== -->
+        <header class="game-header">
+
+            <!-- Left -->
+            <div class="game-header-left">
+
+                <a
+                    id="backLobbyButton"
+                    class="icon-button"
+                    href="./index.html"
+                    aria-label="返回大廳"
+                    title="返回大廳"
+                >
+                    <img
+                        src="./assets/icons/back.svg"
+                        alt=""
+                        aria-hidden="true"
+                    >
+                </a>
+
+
+                <a
+                    class="game-brand"
+                    href="./index.html"
+                    aria-label="CG Flight 大廳"
+                >
+                    <img
+                        class="game-brand-logo"
+                        src="./assets/images/logo-small.webp"
+                        alt="CG Flight"
+                    >
+                </a>
+
+            </div>
+
+
+            <!-- Center -->
+            <div class="game-header-center">
+
+                <div
+                    id="roundStatus"
+                    class="round-status"
+                >
+                    <span
+                        id="roundStatusDot"
+                        class="round-status-dot"
+                    ></span>
+
+                    <span
+                        id="roundStatusText"
+                        class="round-status-text"
+                    >
+                        WAITING
+                    </span>
+                </div>
+
+            </div>
+
+
+            <!-- Right -->
+            <div class="game-header-right">
+
+                <!-- Wallet -->
+                <div
+                    class="game-wallet"
+                    aria-label="玩家代幣餘額"
+                >
+                    <img
+                        src="./assets/icons/coin.svg"
+                        alt=""
+                        aria-hidden="true"
+                    >
+
+                    <div class="game-wallet-content">
+                        <span class="game-wallet-label">
+                            BALANCE
+                        </span>
+
+                        <strong
+                            id="walletBalance"
+                            class="game-wallet-balance"
+                        >
+                            0
+                        </strong>
+                    </div>
+                </div>
+
+
+                <!-- Sound -->
+                <button
+                    id="soundToggleButton"
+                    class="icon-button"
+                    type="button"
+                    aria-label="切換音效"
+                    title="音效"
+                >
+                    <img
+                        id="soundToggleIcon"
+                        src="./assets/icons/sound-on.svg"
+                        alt=""
+                        aria-hidden="true"
+                    >
+                </button>
+
+
+                <!-- Music -->
+                <button
+                    id="musicToggleButton"
+                    class="icon-button"
+                    type="button"
+                    aria-label="切換背景音樂"
+                    title="背景音樂"
+                >
+                    <img
+                        id="musicToggleIcon"
+                        src="./assets/icons/music-on.svg"
+                        alt=""
+                        aria-hidden="true"
+                    >
+                </button>
+
+
+                <!-- Settings -->
+                <button
+                    id="settingsButton"
+                    class="icon-button"
+                    type="button"
+                    aria-label="開啟設定"
+                    title="設定"
+                >
+                    <img
+                        src="./assets/icons/settings.svg"
+                        alt=""
+                        aria-hidden="true"
+                    >
+                </button>
+
+            </div>
+
+        </header>
+
+
+        <!-- =====================================================
+             MAIN
+        ====================================================== -->
+        <main class="game-main">
+
+            <!-- =================================================
+                 RECENT RESULTS
+            ================================================== -->
+            <section
+                class="recent-results-section"
+                aria-labelledby="recentResultsTitle"
+            >
+
+                <div class="recent-results-header">
+
+                    <div class="recent-results-title-wrap">
+
+                        <img
+                            src="./assets/icons/history.svg"
+                            alt=""
+                            aria-hidden="true"
+                        >
+
+                        <h2 id="recentResultsTitle">
+                            RECENT 10
+                        </h2>
+
+                    </div>
+
+
+                    <a
+                        class="recent-results-link"
+                        href="./history.html"
+                    >
+                        VIEW HISTORY
+                    </a>
+
+                </div>
+
+
+                <div
+                    id="recentResults"
+                    class="recent-results"
+                    aria-live="polite"
+                >
+
+                    <span class="recent-result-placeholder">
+                        —
+                    </span>
+
+                    <span class="recent-result-placeholder">
+                        —
+                    </span>
+
+                    <span class="recent-result-placeholder">
+                        —
+                    </span>
+
+                    <span class="recent-result-placeholder">
+                        —
+                    </span>
+
+                    <span class="recent-result-placeholder">
+                        —
+                    </span>
+
+                    <span class="recent-result-placeholder">
+                        —
+                    </span>
+
+                    <span class="recent-result-placeholder">
+                        —
+                    </span>
+
+                    <span class="recent-result-placeholder">
+                        —
+                    </span>
+
+                    <span class="recent-result-placeholder">
+                        —
+                    </span>
+
+                    <span class="recent-result-placeholder">
+                        —
+                    </span>
+
+                </div>
+
+            </section>
+
+
+            <!-- =================================================
+                 GAME STAGE
+            ================================================== -->
+            <section
+                id="gameStage"
+                class="game-stage"
+                aria-labelledby="multiplierDisplay"
+            >
+
+                <!-- Stage Overlay -->
+                <div
+                    class="stage-overlay"
+                    aria-hidden="true"
+                ></div>
+
+
+                <!-- Speed Lines -->
+                <img
+                    id="speedLines"
+                    class="speed-lines"
+                    src="./assets/images/speed-line.webp"
+                    alt=""
+                    aria-hidden="true"
+                >
+
+
+                <!-- =================================================
+                     MULTIPLIER DISPLAY
+                ================================================== -->
+                <div class="multiplier-area">
+
+                    <div
+                        id="phaseLabel"
+                        class="phase-label"
+                    >
+                        PREPARING FLIGHT
+                    </div>
+
+
+                    <div
+                        id="multiplierDisplay"
+                        class="multiplier-display"
+                        aria-live="polite"
+                    >
+                        1.00×
+                    </div>
+
+
+                    <div
+                        id="multiplierSubtext"
+                        class="multiplier-subtext"
+                    >
+                        PLACE YOUR BET
+                    </div>
+
+                </div>
+
+
+                <!-- =================================================
+                     COUNTDOWN
+                ================================================== -->
+                <div
+                    id="countdownOverlay"
+                    class="countdown-overlay is-hidden"
+                    hidden
+                    aria-live="assertive"
+                >
+
+                    <span class="countdown-label">
+                        TAKEOFF IN
+                    </span>
+
+                    <strong
+                        id="countdownValue"
+                        class="countdown-value"
+                    >
+                        3
+                    </strong>
+
+                </div>
+
+
+                <!-- =================================================
+                     FLIGHT VISUAL
+                ================================================== -->
+                <div
+                    id="flightScene"
+                    class="flight-scene"
+                    aria-hidden="true"
+                >
+
+                    <!-- Trail -->
+                    <img
+                        id="planeTrail"
+                        class="plane-trail"
+                        src="./assets/images/plane-trail.webp"
+                        alt=""
+                    >
+
+
+                    <!-- Glow -->
+                    <img
+                        id="planeGlow"
+                        class="plane-glow"
+                        src="./assets/images/plane-glow.webp"
+                        alt=""
+                    >
+
+
+                    <!-- Normal Plane -->
+                    <img
+                        id="planeImage"
+                        class="plane-image"
+                        src="./assets/images/plane.webp"
+                        alt=""
+                    >
+
+
+                    <!-- Crashed Plane -->
+                    <img
+                        id="planeCrashedImage"
+                        class="plane-crashed-image is-hidden"
+                        src="./assets/images/plane-crashed.webp"
+                        alt=""
+                        hidden
+                    >
+
+
+                    <!-- Explosion -->
+                    <img
+                        id="explosionImage"
+                        class="explosion-image is-hidden"
+                        src="./assets/images/explosion.webp"
+                        alt=""
+                        hidden
+                    >
+
+
+                    <!-- Smoke -->
+                    <img
+                        id="smokeImage"
+                        class="smoke-image is-hidden"
+                        src="./assets/images/smoke.webp"
+                        alt=""
+                        hidden
+                    >
+
+
+                    <!-- Spark -->
+                    <img
+                        id="sparkImage"
+                        class="spark-image is-hidden"
+                        src="./assets/images/spark.webp"
+                        alt=""
+                        hidden
+                    >
+
+                </div>
+
+
+                <!-- =================================================
+                     CRASH DISPLAY
+                ================================================== -->
+                <div
+                    id="crashDisplay"
+                    class="crash-display is-hidden"
+                    hidden
+                >
+
+                    <img
+                        src="./assets/icons/crash.svg"
+                        alt=""
+                        aria-hidden="true"
+                    >
+
+                    <span class="crash-display-label">
+                        CRASHED AT
+                    </span>
+
+                    <strong
+                        id="crashMultiplierDisplay"
+                        class="crash-multiplier-display"
+                    >
+                        1.00×
+                    </strong>
+
+                </div>
+
+
+                <!-- =================================================
+                     CASHOUT EFFECT
+                ================================================== -->
+                <div
+                    id="cashoutEffect"
+                    class="cashout-effect is-hidden"
+                    hidden
+                    aria-live="polite"
+                >
+
+                    <img
+                        class="cashout-effect-glow"
+                        src="./assets/images/cashout-glow.webp"
+                        alt=""
+                        aria-hidden="true"
+                    >
+
+                    <div class="cashout-effect-content">
+
+                        <span>
+                            CASHED OUT
+                        </span>
+
+                        <strong
+                            id="cashoutEffectMultiplier"
+                        >
+                            0.00×
+                        </strong>
+
+                        <small
+                            id="cashoutEffectAmount"
+                        >
+                            +0
+                        </small>
+
+                    </div>
+
+                </div>
+
+
+                <!-- =================================================
+                     ROUND ID
+                ================================================== -->
+                <div class="round-id-display">
+
+                    <span>
+                        ROUND
+                    </span>
+
+                    <code id="roundIdDisplay">
+                        —
+                    </code>
+
+                </div>
+
+            </section>
+
+
+            <!-- =================================================
+                 CONTROL PANEL
+            ================================================== -->
+            <section
+                class="game-controls"
+                aria-label="下注與 Cash Out 控制"
+            >
+
+                <!-- =================================================
+                     BET PANEL
+                ================================================== -->
+                <div
+                    id="betPanel"
+                    class="control-card bet-panel"
+                >
+
+                    <div class="control-card-header">
+
+                        <div class="control-card-title">
+
+                            <img
+                                src="./assets/icons/bet.svg"
+                                alt=""
+                                aria-hidden="true"
+                            >
+
+                            <span>
+                                BET
+                            </span>
+
+                        </div>
+
+
+                        <span
+                            id="betStatusText"
+                            class="control-status"
+                        >
+                            READY
+                        </span>
+
+                    </div>
+
+
+                    <div class="bet-input-group">
+
+                        <button
+                            id="betMinusButton"
+                            class="bet-adjust-button"
+                            type="button"
+                            aria-label="減少下注金額"
+                        >
+                            −
+                        </button>
+
+
+                        <div class="bet-input-wrap">
+
+                            <img
+                                src="./assets/icons/coin.svg"
+                                alt=""
+                                aria-hidden="true"
+                            >
+
+                            <input
+                                id="betAmountInput"
+                                class="bet-amount-input"
+                                type="number"
+                                min="1"
+                                max="1000000"
+                                step="1"
+                                value="100"
+                                inputmode="decimal"
+                                autocomplete="off"
+                                aria-label="下注金額"
+                            >
+
+                        </div>
+
+
+                        <button
+                            id="betPlusButton"
+                            class="bet-adjust-button"
+                            type="button"
+                            aria-label="增加下注金額"
+                        >
+                            +
+                        </button>
+
+                    </div>
+
+
+                    <!-- Quick Bet -->
+                    <div
+                        class="quick-bet-buttons"
+                        aria-label="快速下注金額"
+                    >
+
+                        <button
+                            class="quick-bet-button"
+                            type="button"
+                            data-bet-value="100"
+                        >
+                            100
+                        </button>
+
+                        <button
+                            class="quick-bet-button"
+                            type="button"
+                            data-bet-value="500"
+                        >
+                            500
+                        </button>
+
+                        <button
+                            class="quick-bet-button"
+                            type="button"
+                            data-bet-value="1000"
+                        >
+                            1K
+                        </button>
+
+                        <button
+                            class="quick-bet-button"
+                            type="button"
+                            data-bet-value="5000"
+                        >
+                            5K
+                        </button>
+
+                    </div>
+
+
+                    <!-- Main Bet Button -->
+                    <button
+                        id="betButton"
+                        class="bet-action-button"
+                        type="button"
+                    >
+
+                        <img
+                            src="./assets/icons/bet.svg"
+                            alt=""
+                            aria-hidden="true"
+                        >
+
+                        <span id="betButtonText">
+                            PLACE BET
+                        </span>
+
+                    </button>
+
+
+                    <!-- Cancel -->
+                    <button
+                        id="cancelBetButton"
+                        class="cancel-bet-button is-hidden"
+                        type="button"
+                        hidden
+                    >
+                        CANCEL BET
+                    </button>
+
+
+                    <div
+                        id="betMessage"
+                        class="control-message"
+                        aria-live="polite"
+                    ></div>
+
+                </div>
+
+
+                <!-- =================================================
+                     AUTO CASHOUT PANEL
+                ================================================== -->
+                <div
+                    id="autoCashoutPanel"
+                    class="control-card auto-panel"
+                >
+
+                    <div class="control-card-header">
+
+                        <div class="control-card-title">
+
+                            <img
+                                src="./assets/icons/auto.svg"
+                                alt=""
+                                aria-hidden="true"
+                            >
+
+                            <span>
+                                AUTO CASH OUT
+                            </span>
+
+                        </div>
+
+
+                        <button
+                            id="autoCashoutToggle"
+                            class="auto-toggle"
+                            type="button"
+                            aria-pressed="false"
+                        >
+                            OFF
+                        </button>
+
+                    </div>
+
+
+                    <div class="auto-input-group">
+
+                        <span class="auto-input-label">
+                            TARGET
+                        </span>
+
+                        <div class="auto-input-wrap">
+
+                            <input
+                                id="autoCashoutInput"
+                                class="auto-cashout-input"
+                                type="number"
+                                min="1.01"
+                                max="999.99"
+                                step="0.01"
+                                value="2.00"
+                                inputmode="decimal"
+                                autocomplete="off"
+                                aria-label="Auto Cash Out 倍率"
+                            >
+
+                            <span>
+                                ×
+                            </span>
+
+                        </div>
+
+                    </div>
+
+
+                    <!-- Quick Auto -->
+                    <div
+                        class="quick-auto-buttons"
+                        aria-label="快速 Auto Cash Out 倍率"
+                    >
+
+                        <button
+                            class="quick-auto-button"
+                            type="button"
+                            data-auto-value="1.50"
+                        >
+                            1.50×
+                        </button>
+
+                        <button
+                            class="quick-auto-button"
+                            type="button"
+                            data-auto-value="2.00"
+                        >
+                            2.00×
+                        </button>
+
+                        <button
+                            class="quick-auto-button"
+                            type="button"
+                            data-auto-value="3.00"
+                        >
+                            3.00×
+                        </button>
+
+                        <button
+                            class="quick-auto-button"
+                            type="button"
+                            data-auto-value="5.00"
+                        >
+                            5.00×
+                        </button>
+
+                    </div>
+
+
+                    <div class="auto-summary">
+
+                        <span>
+                            STATUS
+                        </span>
+
+                        <strong
+                            id="autoCashoutStatusText"
+                        >
+                            DISABLED
+                        </strong>
+
+                    </div>
+
+
+                    <div
+                        id="autoCashoutMessage"
+                        class="control-message"
+                        aria-live="polite"
+                    ></div>
+
+                </div>
+
+
+                <!-- =================================================
+                     CASHOUT PANEL
+                ================================================== -->
+                <div
+                    id="cashoutPanel"
+                    class="control-card cashout-panel"
+                >
+
+                    <div class="control-card-header">
+
+                        <div class="control-card-title">
+
+                            <img
+                                src="./assets/icons/cashout.svg"
+                                alt=""
+                                aria-hidden="true"
+                            >
+
+                            <span>
+                                CASH OUT
+                            </span>
+
+                        </div>
+
+
+                        <span
+                            id="cashoutStatusText"
+                            class="control-status"
+                        >
+                            WAITING
+                        </span>
+
+                    </div>
+
+
+                    <div class="cashout-preview">
+
+                        <span class="cashout-preview-label">
+                            CURRENT RETURN
+                        </span>
+
+
+                        <strong
+                            id="cashoutPreviewAmount"
+                            class="cashout-preview-amount"
+                        >
+                            0
+                        </strong>
+
+
+                        <span class="cashout-preview-unit">
+                            COINS
+                        </span>
+
+                    </div>
+
+
+                    <div class="cashout-preview-detail">
+
+                        <span>
+                            BET
+                            <strong id="cashoutBetAmount">
+                                0
+                            </strong>
+                        </span>
+
+                        <span>
+                            ×
+                        </span>
+
+                        <span>
+                            RATE
+                            <strong id="cashoutCurrentMultiplier">
+                                1.00
+                            </strong>
+                        </span>
+
+                    </div>
+
+
+                    <button
+                        id="cashoutButton"
+                        class="cashout-action-button"
+                        type="button"
+                        disabled
+                    >
+
+                        <img
+                            src="./assets/icons/cashout.svg"
+                            alt=""
+                            aria-hidden="true"
+                        >
+
+                        <span id="cashoutButtonText">
+                            WAITING FOR FLIGHT
+                        </span>
+
+                    </button>
+
+
+                    <div
+                        id="cashoutMessage"
+                        class="control-message"
+                        aria-live="polite"
+                    ></div>
+
+                </div>
+
+            </section>
+
+
+            <!-- =================================================
+                 ROUND RESULT
+            ================================================== -->
+            <section
+                id="roundResultPanel"
+                class="round-result-panel is-hidden"
+                hidden
+                aria-live="polite"
+            >
+
+                <div class="round-result-main">
+
+                    <img
+                        id="roundResultIcon"
+                        src="./assets/icons/trophy.svg"
+                        alt=""
+                        aria-hidden="true"
+                    >
+
+
+                    <div class="round-result-copy">
+
+                        <span
+                            id="roundResultLabel"
+                            class="round-result-label"
+                        >
+                            ROUND COMPLETE
+                        </span>
+
+                        <strong
+                            id="roundResultTitle"
+                            class="round-result-title"
+                        >
+                            —
+                        </strong>
+
+                    </div>
+
+                </div>
+
+
+                <div class="round-result-stats">
+
+                    <div class="round-result-stat">
+
+                        <span>
+                            BET
+                        </span>
+
+                        <strong id="resultBetAmount">
+                            0
+                        </strong>
+
+                    </div>
+
+
+                    <div class="round-result-stat">
+
+                        <span>
+                            CASH OUT
+                        </span>
+
+                        <strong id="resultCashoutMultiplier">
+                            —
+                        </strong>
+
+                    </div>
+
+
+                    <div class="round-result-stat">
+
+                        <span>
+                            CRASH
+                        </span>
+
+                        <strong id="resultCrashMultiplier">
+                            —
+                        </strong>
+
+                    </div>
+
+
+                    <div class="round-result-stat">
+
+                        <span>
+                            PROFIT
+                        </span>
+
+                        <strong id="resultProfit">
+                            0
+                        </strong>
+
+                    </div>
+
+                </div>
+
+
+                <button
+                    id="nextRoundButton"
+                    class="next-round-button"
+                    type="button"
+                >
+                    NEXT ROUND
+                </button>
+
+            </section>
+
+        </main>
+
+
+        <!-- =====================================================
+             FOOTER
+        ====================================================== -->
+        <footer class="game-footer">
+
+            <span>
+                CG FLIGHT
+            </span>
+
+            <span class="game-footer-divider">
+                •
+            </span>
+
+            <span>
+                Virtual Coins Only
+            </span>
+
+            <span class="game-footer-divider">
+                •
+            </span>
+
+            <a href="./rules.html">
+                Rules
+            </a>
+
+            <span class="game-footer-divider">
+                •
+            </span>
+
+            <a href="./history.html">
+                History
+            </a>
+
+        </footer>
+
+    </div>
+
+
+
+    <!-- =========================================================
+         SETTINGS MODAL
+    ========================================================== -->
+    <div
+        id="settingsModal"
+        class="modal-overlay is-hidden"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="settingsModalTitle"
+        hidden
+    >
+
+        <div class="modal settings-modal">
+
+            <header class="settings-modal-header">
+
+                <h2 id="settingsModalTitle">
+                    Settings
+                </h2>
+
+
+                <button
+                    id="closeSettingsButton"
+                    class="modal-close-button"
+                    type="button"
+                    aria-label="關閉設定"
+                >
+                    ×
+                </button>
+
+            </header>
+
+
+            <div class="settings-modal-body">
+
+                <!-- Sound -->
+                <div class="settings-row">
+
+                    <div class="settings-row-label">
+                        Sound Effects
+                    </div>
+
+
+                    <button
+                        id="settingsSoundToggle"
+                        class="settings-toggle-button"
+                        type="button"
+                        aria-pressed="true"
+                    >
+                        ON
+                    </button>
+
+                </div>
+
+
+                <!-- Music -->
+                <div class="settings-row">
+
+                    <div class="settings-row-label">
+                        Background Music
+                    </div>
+
+
+                    <button
+                        id="settingsMusicToggle"
+                        class="settings-toggle-button"
+                        type="button"
+                        aria-pressed="true"
+                    >
+                        ON
+                    </button>
+
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+
+
+
+    <!-- =========================================================
+         CONFIRM LEAVE MODAL
+         飛行中或已有下注時返回大廳，可由 game.js 使用。
+    ========================================================== -->
+    <div
+        id="leaveConfirmModal"
+        class="modal-overlay is-hidden"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="leaveConfirmTitle"
+        hidden
+    >
+
+        <div class="modal leave-confirm-modal">
+
+            <header class="leave-confirm-header">
+
+                <img
+                    src="./assets/icons/info.svg"
+                    alt=""
+                    aria-hidden="true"
+                >
+
+
+                <div>
+                    <span>
+                        LEAVE GAME
+                    </span>
+
+                    <h2 id="leaveConfirmTitle">
+                        確定返回大廳？
+                    </h2>
+                </div>
+
+            </header>
+
+
+            <div class="leave-confirm-body">
+
+                <p>
+                    如果目前仍有進行中的下注或飛行，離開遊戲頁面可能中斷當前畫面流程。
+                </p>
+
+            </div>
+
+
+            <footer class="leave-confirm-footer">
+
+                <button
+                    id="cancelLeaveButton"
+                    class="leave-secondary-button"
+                    type="button"
+                >
+                    繼續遊戲
+                </button>
+
+
+                <a
+                    id="confirmLeaveButton"
+                    class="leave-primary-button"
+                    href="./index.html"
+                >
+                    返回大廳
+                </a>
+
+            </footer>
+
+        </div>
+
+    </div>
+
+
+
+    <!-- =========================================================
+         PAGE SCRIPT
+    ========================================================== -->
+    <script
+        type="module"
+        src="./js/pages/game.js"
+    ></script>
+
+</body>
+</html>
