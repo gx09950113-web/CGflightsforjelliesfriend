@@ -5,30 +5,31 @@
    In-memory round state manager.
 
    Responsibilities:
-   - Store current round state
-   - Manage game phase transitions
-   - Store current multiplier
-   - Store crash point
-   - Store bet state
-   - Store cashout state
-   - Store timing information
-   - Provide subscription mechanism
-   - Reset round state safely
+   - Define game phases
+   - Define bet/result enums
+   - Create/reset rounds
+   - Store current round runtime state
+   - Provide controlled synchronous mutations
+   - Publish state change events
+   - Protect state from accidental outside mutation
 
    IMPORTANT:
-   This module does NOT:
-   - Write localStorage
-   - Deduct wallet balance
-   - Generate crash multipliers
-   - Calculate flight curves
-   - Perform settlement
+   state.js manages the CURRENT ROUND only.
+
+   It does NOT:
+   - Persist History
+   - Persist Statistics
+   - Modify Wallet
+   - Generate Crash Point
+   - Perform Cash Out calculation
 ========================================================= */
+
 
 import {
     clone,
     createId,
-    isFiniteNumber,
-    isPositiveNumber
+    roundTo,
+    isPlainObject
 } from "../core/utils.js";
 
 
@@ -37,19 +38,27 @@ import {
 ========================================================= */
 
 const GAME_PHASES = Object.freeze({
-    IDLE: "IDLE",
 
-    BETTING: "BETTING",
+    IDLE:
+        "IDLE",
 
-    COUNTDOWN: "COUNTDOWN",
+    BETTING:
+        "BETTING",
 
-    FLYING: "FLYING",
+    COUNTDOWN:
+        "COUNTDOWN",
 
-    CRASHED: "CRASHED",
+    FLYING:
+        "FLYING",
 
-    SETTLING: "SETTLING",
+    CRASHED:
+        "CRASHED",
 
-    ENDED: "ENDED"
+    SETTLING:
+        "SETTLING",
+
+    ENDED:
+        "ENDED"
 });
 
 
@@ -58,183 +67,327 @@ const GAME_PHASES = Object.freeze({
 ========================================================= */
 
 const BET_STATUS = Object.freeze({
-    NONE: "NONE",
 
-    PLACED: "PLACED",
+    NONE:
+        "NONE",
 
-    CANCELLED: "CANCELLED",
+    PLACED:
+        "PLACED",
 
-    ACTIVE: "ACTIVE",
+    ACTIVE:
+        "ACTIVE",
 
-    CASHED_OUT: "CASHED_OUT",
+    CASHED_OUT:
+        "CASHED_OUT",
 
-    LOST: "LOST",
+    LOST:
+        "LOST",
 
-    REFUNDED: "REFUNDED"
+    CANCELLED:
+        "CANCELLED",
+
+    REFUNDED:
+        "REFUNDED"
 });
 
 
 /* =========================================================
-   ROUND RESULT STATUS
+   ROUND RESULT
 ========================================================= */
 
 const ROUND_RESULT = Object.freeze({
-    NONE: "NONE",
 
-    WIN: "WIN",
+    WIN:
+        "WIN",
 
-    LOSS: "LOSS",
+    LOSS:
+        "LOSS",
 
-    NO_BET: "NO_BET",
+    REFUND:
+        "REFUND",
 
-    REFUND: "REFUND"
+    NO_BET:
+        "NO_BET"
 });
 
 
 /* =========================================================
-   DEFAULT ROUND STATE FACTORY
+   CASHOUT TYPES
 ========================================================= */
 
-function createDefaultRoundState() {
+const CASHOUT_TYPES = Object.freeze({
+
+    NONE:
+        "NONE",
+
+    MANUAL:
+        "MANUAL",
+
+    AUTO:
+        "AUTO"
+});
+
+
+/* =========================================================
+   STATE EVENT TYPES
+========================================================= */
+
+const STATE_EVENT_TYPES = Object.freeze({
+
+    ROUND_CREATED:
+        "ROUND_CREATED",
+
+    STATE_UPDATED:
+        "STATE_UPDATED",
+
+    PHASE_CHANGED:
+        "PHASE_CHANGED",
+
+    ROUND_RESET:
+        "ROUND_RESET"
+});
+
+
+/* =========================================================
+   CREATE EMPTY ROUND STATE
+========================================================= */
+
+function createEmptyState() {
+
     return {
-        roundId: null,
+
+        /* -------------------------------------------------
+           Round
+        -------------------------------------------------- */
+
+        roundId:
+            null,
 
         phase:
             GAME_PHASES.IDLE,
 
-        multiplier: 1,
+        createdAt:
+            null,
 
-        crashMultiplier: null,
+        endedAt:
+            null,
 
-        countdown: {
-            remaining: 0,
 
-            startedAt: null,
-
-            endsAt: null
-        },
-
-        flight: {
-            startedAt: null,
-
-            crashedAt: null,
-
-            elapsedMs: 0
-        },
+        /* -------------------------------------------------
+           Bet
+        -------------------------------------------------- */
 
         bet: {
+
             status:
                 BET_STATUS.NONE,
 
-            amount: 0,
+            amount:
+                0,
 
-            placedAt: null,
+            placedAt:
+                null,
 
-            cancelledAt: null,
+            activatedAt:
+                null,
 
-            activatedAt: null,
+            cancelledAt:
+                null,
 
-            transactionId: null
+            refundedAt:
+                null,
+
+            transactionId:
+                null,
+
+            refundTransactionId:
+                null
         },
+
+
+        /* -------------------------------------------------
+           Flight
+        -------------------------------------------------- */
+
+        flight: {
+
+            startedAt:
+                null,
+
+            crashedAt:
+                null,
+
+            elapsedMs:
+                0,
+
+            currentMultiplier:
+                1,
+
+            crashMultiplier:
+                null
+        },
+
+
+        /* -------------------------------------------------
+           Auto Cash Out
+        -------------------------------------------------- */
 
         autoCashout: {
-            enabled: false,
 
-            targetMultiplier: null
+            enabled:
+                false,
+
+            targetMultiplier:
+                null,
+
+            locked:
+                false
         },
+
+
+        /* -------------------------------------------------
+           Cash Out
+        -------------------------------------------------- */
 
         cashout: {
-            completed: false,
 
-            automatic: false,
+            completed:
+                false,
 
-            multiplier: null,
+            automatic:
+                false,
 
-            amount: 0,
+            type:
+                CASHOUT_TYPES.NONE,
 
-            profit: 0,
+            multiplier:
+                null,
 
-            completedAt: null,
+            amount:
+                0,
 
-            transactionId: null
+            profit:
+                0,
+
+            completedAt:
+                null,
+
+            transactionId:
+                null
         },
 
-        result: {
-            status:
-                ROUND_RESULT.NONE,
 
-            wagered: 0,
-
-            returned: 0,
-
-            profit: 0
-        },
+        /* -------------------------------------------------
+           Settlement
+        -------------------------------------------------- */
 
         settlement: {
-            completed: false,
 
-            completedAt: null
-        },
+            completed:
+                false,
 
-        metadata: {}
+            result:
+                null,
+
+            wagered:
+                0,
+
+            returned:
+                0,
+
+            profit:
+                0,
+
+            completedAt:
+                null,
+
+            recordId:
+                null
+        }
     };
 }
 
 
 /* =========================================================
-   INTERNAL STATE
+   RUNTIME STATE
 ========================================================= */
 
-let roundState =
-    createDefaultRoundState();
+let currentState =
+    createEmptyState();
 
 
 /* =========================================================
-   STATE LISTENERS
+   LISTENERS
 ========================================================= */
 
 const stateListeners =
     new Set();
 
 
-/* =========================================================
-   STATE SNAPSHOT
-========================================================= */
+function subscribeToState(
+    listener
+) {
 
-function getState() {
-    return clone(
-        roundState
+    if (
+        typeof listener !==
+        "function"
+    ) {
+        throw new TypeError(
+            "[CG Flight] State listener must be a function."
+        );
+    }
+
+
+    stateListeners.add(
+        listener
     );
+
+
+    return function unsubscribe() {
+
+        stateListeners.delete(
+            listener
+        );
+    };
 }
 
 
 /* =========================================================
-   INTERNAL NOTIFY
+   NOTIFY
 ========================================================= */
 
 function notifyStateListeners(
-    previousState,
-    nextState,
-    changedKeys = []
+    event
 ) {
+
     const payload = {
-        previous:
-            clone(previousState),
+
+        ...clone(event),
 
         state:
-            clone(nextState),
+            clone(
+                currentState
+            ),
 
-        changedKeys:
-            [...changedKeys]
+        timestamp:
+            event.timestamp ??
+            Date.now()
     };
+
 
     for (
         const listener
         of stateListeners
     ) {
+
         try {
-            listener(payload);
+
+            listener(
+                payload
+            );
+
         } catch (error) {
+
             console.error(
                 "[CG Flight] State listener failed:",
                 error
@@ -245,216 +398,447 @@ function notifyStateListeners(
 
 
 /* =========================================================
-   SUBSCRIBE
+   GET STATE
 ========================================================= */
 
-function subscribeToState(
-    listener
+function getState() {
+
+    return clone(
+        currentState
+    );
+}
+
+
+/* =========================================================
+   GET PHASE
+========================================================= */
+
+function getPhase() {
+
+    return currentState.phase;
+}
+
+
+/* =========================================================
+   GET ROUND ID
+========================================================= */
+
+function getRoundId() {
+
+    return currentState.roundId;
+}
+
+
+/* =========================================================
+   CHECK PHASE
+========================================================= */
+
+function isPhase(
+    ...phases
 ) {
+
+    return phases.includes(
+        currentState.phase
+    );
+}
+
+
+/* =========================================================
+   VALID PHASE
+========================================================= */
+
+function isValidPhase(
+    phase
+) {
+
+    return Object.values(
+        GAME_PHASES
+    ).includes(
+        phase
+    );
+}
+
+
+/* =========================================================
+   NORMALIZE STATE
+
+   Used after every update to prevent obviously invalid
+   runtime values.
+========================================================= */
+
+function normalizeState(
+    state
+) {
+
     if (
-        typeof listener !==
-        "function"
+        !isPlainObject(
+            state
+        )
     ) {
-        throw new TypeError(
-            "[CG Flight] State listener must be a function."
-        );
+        return createEmptyState();
     }
 
-    stateListeners.add(
-        listener
-    );
 
-    return function unsubscribe() {
-        stateListeners.delete(
-            listener
+    /* -----------------------------------------------------
+       Phase
+    ----------------------------------------------------- */
+
+    if (
+        !isValidPhase(
+            state.phase
+        )
+    ) {
+        state.phase =
+            GAME_PHASES.IDLE;
+    }
+
+
+    /* -----------------------------------------------------
+       Bet
+    ----------------------------------------------------- */
+
+    if (
+        !isPlainObject(
+            state.bet
+        )
+    ) {
+        state.bet =
+            createEmptyState().bet;
+    }
+
+
+    state.bet.amount =
+        Math.max(
+            0,
+            roundTo(
+                Number(
+                    state.bet.amount
+                ) || 0,
+                2
+            )
         );
-    };
+
+
+    /* -----------------------------------------------------
+       Flight
+    ----------------------------------------------------- */
+
+    if (
+        !isPlainObject(
+            state.flight
+        )
+    ) {
+        state.flight =
+            createEmptyState().flight;
+    }
+
+
+    state.flight.currentMultiplier =
+        Math.max(
+            1,
+            roundTo(
+                Number(
+                    state.flight
+                        .currentMultiplier
+                ) || 1,
+                2
+            )
+        );
+
+
+    if (
+        state.flight.crashMultiplier !==
+        null
+    ) {
+
+        const crash =
+            Number(
+                state.flight
+                    .crashMultiplier
+            );
+
+
+        state.flight.crashMultiplier =
+            Number.isFinite(
+                crash
+            )
+                ? Math.max(
+                    1,
+                    roundTo(
+                        crash,
+                        2
+                    )
+                )
+                : null;
+    }
+
+
+    state.flight.elapsedMs =
+        Math.max(
+            0,
+            Number(
+                state.flight.elapsedMs
+            ) || 0
+        );
+
+
+    /* -----------------------------------------------------
+       Auto Cash Out
+    ----------------------------------------------------- */
+
+    if (
+        !isPlainObject(
+            state.autoCashout
+        )
+    ) {
+        state.autoCashout =
+            createEmptyState()
+                .autoCashout;
+    }
+
+
+    state.autoCashout.enabled =
+        Boolean(
+            state.autoCashout.enabled
+        );
+
+
+    state.autoCashout.locked =
+        Boolean(
+            state.autoCashout.locked
+        );
+
+
+    if (
+        state.autoCashout
+            .targetMultiplier !==
+        null
+    ) {
+
+        const target =
+            Number(
+                state.autoCashout
+                    .targetMultiplier
+            );
+
+
+        state.autoCashout
+            .targetMultiplier =
+            Number.isFinite(
+                target
+            )
+                ? roundTo(
+                    target,
+                    2
+                )
+                : null;
+    }
+
+
+    /* -----------------------------------------------------
+       Cash Out
+    ----------------------------------------------------- */
+
+    if (
+        !isPlainObject(
+            state.cashout
+        )
+    ) {
+        state.cashout =
+            createEmptyState()
+                .cashout;
+    }
+
+
+    state.cashout.completed =
+        Boolean(
+            state.cashout.completed
+        );
+
+
+    state.cashout.automatic =
+        Boolean(
+            state.cashout.automatic
+        );
+
+
+    state.cashout.amount =
+        Math.max(
+            0,
+            roundTo(
+                Number(
+                    state.cashout.amount
+                ) || 0,
+                2
+            )
+        );
+
+
+    state.cashout.profit =
+        roundTo(
+            Number(
+                state.cashout.profit
+            ) || 0,
+            2
+        );
+
+
+    /* -----------------------------------------------------
+       Settlement
+    ----------------------------------------------------- */
+
+    if (
+        !isPlainObject(
+            state.settlement
+        )
+    ) {
+        state.settlement =
+            createEmptyState()
+                .settlement;
+    }
+
+
+    state.settlement.completed =
+        Boolean(
+            state.settlement
+                .completed
+        );
+
+
+    state.settlement.wagered =
+        Math.max(
+            0,
+            roundTo(
+                Number(
+                    state.settlement
+                        .wagered
+                ) || 0,
+                2
+            )
+        );
+
+
+    state.settlement.returned =
+        Math.max(
+            0,
+            roundTo(
+                Number(
+                    state.settlement
+                        .returned
+                ) || 0,
+                2
+            )
+        );
+
+
+    state.settlement.profit =
+        roundTo(
+            Number(
+                state.settlement
+                    .profit
+            ) || 0,
+            2
+        );
+
+
+    return state;
 }
 
 
 /* =========================================================
    UPDATE STATE
+
+   Canonical mutation path for game modules.
+
+   Example:
+
+   updateState((state) => {
+       state.bet.status = BET_STATUS.PLACED;
+       state.bet.amount = 1000;
+   });
 ========================================================= */
 
 function updateState(
-    updater,
-    changedKeys = []
+    mutator,
+    {
+        type =
+            STATE_EVENT_TYPES
+                .STATE_UPDATED,
+
+        source =
+            null
+    } = {}
 ) {
+
     if (
-        typeof updater !==
+        typeof mutator !==
         "function"
     ) {
         throw new TypeError(
-            "[CG Flight] updateState requires a function."
+            "[CG Flight] updateState() requires a mutator function."
         );
     }
 
-    const previousState =
-        clone(roundState);
 
-    const workingCopy =
-        clone(roundState);
-
-    const result =
-        updater(workingCopy);
-
-    const nextState =
-        result === undefined
-            ? workingCopy
-            : result;
-
-    if (
-        !nextState ||
-        typeof nextState !== "object" ||
-        Array.isArray(nextState)
-    ) {
-        throw new TypeError(
-            "[CG Flight] updateState callback must return an object or undefined."
+    const previous =
+        clone(
+            currentState
         );
+
+
+    const working =
+        clone(
+            currentState
+        );
+
+
+    try {
+
+        const returned =
+            mutator(
+                working
+            );
+
+
+        if (
+            returned &&
+            typeof returned.then ===
+                "function"
+        ) {
+            throw new TypeError(
+                "[CG Flight] updateState() mutator must be synchronous."
+            );
+        }
+
+    } catch (error) {
+
+        console.error(
+            "[CG Flight] State update failed:",
+            error
+        );
+
+
+        return null;
     }
 
-    roundState =
-        nextState;
 
-    notifyStateListeners(
-        previousState,
-        roundState,
-        changedKeys
-    );
+    currentState =
+        normalizeState(
+            working
+        );
+
+
+    notifyStateListeners({
+
+        type,
+
+        source,
+
+        previous
+    });
+
 
     return getState();
-}
-
-
-/* =========================================================
-   ROUND CREATION
-========================================================= */
-
-function createRound() {
-    const previousState =
-        clone(roundState);
-
-    roundState =
-        createDefaultRoundState();
-
-    roundState.roundId =
-        createId("round");
-
-    roundState.phase =
-        GAME_PHASES.BETTING;
-
-    notifyStateListeners(
-        previousState,
-        roundState,
-        [
-            "roundId",
-            "phase"
-        ]
-    );
-
-    return getState();
-}
-
-
-/* =========================================================
-   RESET ROUND
-========================================================= */
-
-function resetRound() {
-    const previousState =
-        clone(roundState);
-
-    roundState =
-        createDefaultRoundState();
-
-    notifyStateListeners(
-        previousState,
-        roundState,
-        ["*"]
-    );
-
-    return getState();
-}
-
-
-/* =========================================================
-   PHASE
-========================================================= */
-
-function getPhase() {
-    return roundState.phase;
-}
-
-
-function isPhase(phase) {
-    return (
-        roundState.phase === phase
-    );
-}
-
-
-/* =========================================================
-   ALLOWED PHASE TRANSITIONS
-========================================================= */
-
-const PHASE_TRANSITIONS = Object.freeze({
-
-    [GAME_PHASES.IDLE]: [
-        GAME_PHASES.BETTING
-    ],
-
-    [GAME_PHASES.BETTING]: [
-        GAME_PHASES.COUNTDOWN,
-        GAME_PHASES.ENDED
-    ],
-
-    [GAME_PHASES.COUNTDOWN]: [
-        GAME_PHASES.FLYING,
-        GAME_PHASES.ENDED
-    ],
-
-    [GAME_PHASES.FLYING]: [
-        GAME_PHASES.CRASHED
-    ],
-
-    [GAME_PHASES.CRASHED]: [
-        GAME_PHASES.SETTLING
-    ],
-
-    [GAME_PHASES.SETTLING]: [
-        GAME_PHASES.ENDED
-    ],
-
-    [GAME_PHASES.ENDED]: [
-        GAME_PHASES.BETTING,
-        GAME_PHASES.IDLE
-    ]
-});
-
-
-/* =========================================================
-   CHECK PHASE TRANSITION
-========================================================= */
-
-function canTransitionTo(
-    nextPhase
-) {
-    if (
-        !Object.values(
-            GAME_PHASES
-        ).includes(nextPhase)
-    ) {
-        return false;
-    }
-
-    const allowed =
-        PHASE_TRANSITIONS[
-            roundState.phase
-        ] ?? [];
-
-    return allowed.includes(
-        nextPhase
-    );
 }
 
 
@@ -463,877 +847,898 @@ function canTransitionTo(
 ========================================================= */
 
 function setPhase(
-    nextPhase,
+    phase,
     {
-        force = false
+        source =
+            null
     } = {}
 ) {
-    if (
-        !Object.values(
-            GAME_PHASES
-        ).includes(nextPhase)
-    ) {
-        return {
-            success: false,
-            reason: "INVALID_PHASE"
-        };
-    }
 
     if (
-        !force &&
-        !canTransitionTo(
-            nextPhase
+        !isValidPhase(
+            phase
         )
     ) {
+
         return {
             success: false,
+
             reason:
-                "INVALID_PHASE_TRANSITION",
+                "INVALID_PHASE",
 
-            currentPhase:
-                roundState.phase,
-
-            requestedPhase:
-                nextPhase
+            phase:
+                currentState.phase
         };
     }
 
-    const previousPhase =
-        roundState.phase;
 
-    updateState(
-        (state) => {
-            state.phase =
-                nextPhase;
-        },
-        ["phase"]
-    );
+    if (
+        currentState.phase ===
+        phase
+    ) {
+
+        return {
+            success: true,
+
+            changed:
+                false,
+
+            phase
+        };
+    }
+
+
+    const previousPhase =
+        currentState.phase;
+
+
+    const updated =
+        updateState(
+            (state) => {
+
+                state.phase =
+                    phase;
+            },
+            {
+                type:
+                    STATE_EVENT_TYPES
+                        .PHASE_CHANGED,
+
+                source
+            }
+        );
+
+
+    if (!updated) {
+
+        return {
+            success: false,
+
+            reason:
+                "STATE_UPDATE_FAILED",
+
+            phase:
+                previousPhase
+        };
+    }
+
 
     return {
+
         success: true,
+
+        changed:
+            true,
 
         previousPhase,
 
-        phase:
-            nextPhase
+        phase
     };
 }
 
 
 /* =========================================================
-   MULTIPLIER
+   CREATE ROUND
+
+   Creates a fresh BETTING round.
+
+   Does NOT generate Crash Point.
+   crash.js / flight.js own that responsibility.
 ========================================================= */
 
-function getMultiplier() {
-    return roundState.multiplier;
-}
-
-
-function setMultiplier(
-    multiplier
+function createRound(
+    {
+        roundId =
+            null
+    } = {}
 ) {
-    if (
-        !isFiniteNumber(
-            multiplier
-        ) ||
-        multiplier < 1
-    ) {
-        return {
-            success: false,
-            reason:
-                "INVALID_MULTIPLIER"
-        };
-    }
 
-    updateState(
-        (state) => {
-            state.multiplier =
-                multiplier;
-        },
-        ["multiplier"]
-    );
+    const timestamp =
+        new Date()
+            .toISOString();
 
-    return {
-        success: true,
-        multiplier
-    };
+
+    const previous =
+        clone(
+            currentState
+        );
+
+
+    currentState =
+        createEmptyState();
+
+
+    currentState.roundId =
+        roundId ||
+        createId(
+            "round"
+        );
+
+
+    currentState.phase =
+        GAME_PHASES.BETTING;
+
+
+    currentState.createdAt =
+        timestamp;
+
+
+    notifyStateListeners({
+
+        type:
+            STATE_EVENT_TYPES
+                .ROUND_CREATED,
+
+        previous,
+
+        source:
+            "createRound"
+    });
+
+
+    return getState();
 }
 
 
 /* =========================================================
-   CRASH MULTIPLIER
+   RESET ROUND
+
+   Returns runtime to IDLE.
+
+   createRound() should normally be called immediately after
+   when starting another game.
 ========================================================= */
 
-function getCrashMultiplier() {
-    return (
-        roundState
-            .crashMultiplier
+function resetRound() {
+
+    const previous =
+        clone(
+            currentState
+        );
+
+
+    currentState =
+        createEmptyState();
+
+
+    notifyStateListeners({
+
+        type:
+            STATE_EVENT_TYPES
+                .ROUND_RESET,
+
+        previous,
+
+        source:
+            "resetRound"
+    });
+
+
+    return getState();
+}
+
+
+/* =========================================================
+   BET HELPERS
+========================================================= */
+
+function setBetPlaced(
+    {
+        amount,
+        transactionId = null,
+        placedAt = null
+    }
+) {
+
+    return updateState(
+        (state) => {
+
+            state.bet.status =
+                BET_STATUS.PLACED;
+
+
+            state.bet.amount =
+                amount;
+
+
+            state.bet.transactionId =
+                transactionId;
+
+
+            state.bet.placedAt =
+                placedAt ??
+                new Date()
+                    .toISOString();
+        },
+        {
+            source:
+                "setBetPlaced"
+        }
     );
 }
 
+
+function setBetCancelled(
+    {
+        refundTransactionId = null,
+        cancelledAt = null
+    } = {}
+) {
+
+    return updateState(
+        (state) => {
+
+            state.bet.status =
+                BET_STATUS.CANCELLED;
+
+
+            state.bet
+                .refundTransactionId =
+                refundTransactionId;
+
+
+            state.bet.cancelledAt =
+                cancelledAt ??
+                new Date()
+                    .toISOString();
+        },
+        {
+            source:
+                "setBetCancelled"
+        }
+    );
+}
+
+
+function activateBet(
+    activatedAt = null
+) {
+
+    return updateState(
+        (state) => {
+
+            if (
+                state.bet.status ===
+                BET_STATUS.PLACED
+            ) {
+
+                state.bet.status =
+                    BET_STATUS.ACTIVE;
+
+
+                state.bet.activatedAt =
+                    activatedAt ??
+                    new Date()
+                        .toISOString();
+            }
+        },
+        {
+            source:
+                "activateBet"
+        }
+    );
+}
+
+
+function markBetLost() {
+
+    return updateState(
+        (state) => {
+
+            if (
+                state.bet.status ===
+                BET_STATUS.ACTIVE
+            ) {
+
+                state.bet.status =
+                    BET_STATUS.LOST;
+            }
+        },
+        {
+            source:
+                "markBetLost"
+        }
+    );
+}
+
+
+function markBetRefunded(
+    {
+        refundTransactionId = null
+    } = {}
+) {
+
+    return updateState(
+        (state) => {
+
+            state.bet.status =
+                BET_STATUS.REFUNDED;
+
+
+            state.bet.refundTransactionId =
+                refundTransactionId;
+
+
+            state.bet.refundedAt =
+                new Date()
+                    .toISOString();
+        },
+        {
+            source:
+                "markBetRefunded"
+        }
+    );
+}
+
+
+/* =========================================================
+   FLIGHT HELPERS
+========================================================= */
 
 function setCrashMultiplier(
     multiplier
 ) {
+
+    const numeric =
+        Number(multiplier);
+
+
     if (
-        !isFiniteNumber(
-            multiplier
+        !Number.isFinite(
+            numeric
         ) ||
-        multiplier < 1
+        numeric < 1
     ) {
+
         return {
             success: false,
+
             reason:
                 "INVALID_CRASH_MULTIPLIER"
         };
     }
 
+
     updateState(
         (state) => {
-            state.crashMultiplier =
-                multiplier;
+
+            state.flight.crashMultiplier =
+                roundTo(
+                    numeric,
+                    2
+                );
         },
-        ["crashMultiplier"]
+        {
+            source:
+                "setCrashMultiplier"
+        }
     );
+
 
     return {
         success: true,
+
         crashMultiplier:
-            multiplier
+            roundTo(
+                numeric,
+                2
+            )
     };
 }
 
 
-/* =========================================================
-   COUNTDOWN
-========================================================= */
+function startFlightState() {
 
-function setCountdown({
-    remaining,
-    startedAt = null,
-    endsAt = null
-}) {
-    if (
-        !isFiniteNumber(
-            remaining
-        ) ||
-        remaining < 0
-    ) {
-        return {
-            success: false,
-            reason:
-                "INVALID_COUNTDOWN"
-        };
-    }
+    const timestamp =
+        new Date()
+            .toISOString();
 
-    updateState(
-        (state) => {
-            state.countdown = {
-                remaining,
 
-                startedAt,
+    const updated =
+        updateState(
+            (state) => {
 
-                endsAt
-            };
-        },
-        ["countdown"]
+                state.phase =
+                    GAME_PHASES.FLYING;
+
+
+                state.flight.startedAt =
+                    timestamp;
+
+
+                state.flight.currentMultiplier =
+                    1;
+
+
+                state.flight.elapsedMs =
+                    0;
+
+
+                state.autoCashout.locked =
+                    true;
+
+
+                if (
+                    state.bet.status ===
+                    BET_STATUS.PLACED
+                ) {
+
+                    state.bet.status =
+                        BET_STATUS.ACTIVE;
+
+
+                    state.bet.activatedAt =
+                        timestamp;
+                }
+            },
+            {
+                type:
+                    STATE_EVENT_TYPES
+                        .PHASE_CHANGED,
+
+                source:
+                    "startFlightState"
+            }
+        );
+
+
+    return Boolean(
+        updated
     );
-
-    return {
-        success: true
-    };
 }
 
 
-/* =========================================================
-   FLIGHT TIMING
-========================================================= */
-
-function markFlightStarted(
-    timestamp =
-        Date.now()
+function setCurrentMultiplier(
+    multiplier,
+    elapsedMs = null
 ) {
-    updateState(
-        (state) => {
-            state.flight.startedAt =
-                timestamp;
 
-            state.flight.crashedAt =
-                null;
-
-            state.flight.elapsedMs =
-                0;
-        },
-        ["flight"]
-    );
-
-    return getState().flight;
-}
+    const numeric =
+        Number(multiplier);
 
 
-function updateFlightElapsed(
-    elapsedMs
-) {
     if (
-        !isFiniteNumber(
-            elapsedMs
-        ) ||
-        elapsedMs < 0
+        !Number.isFinite(
+            numeric
+        )
     ) {
         return false;
     }
 
-    updateState(
-        (state) => {
-            state.flight.elapsedMs =
-                elapsedMs;
-        },
-        ["flight.elapsedMs"]
-    );
 
-    return true;
+    return Boolean(
+        updateState(
+            (state) => {
+
+                state.flight
+                    .currentMultiplier =
+                    Math.max(
+                        1,
+                        roundTo(
+                            numeric,
+                            2
+                        )
+                    );
+
+
+                if (
+                    elapsedMs !==
+                    null
+                ) {
+
+                    state.flight.elapsedMs =
+                        Math.max(
+                            0,
+                            Number(
+                                elapsedMs
+                            ) || 0
+                        );
+                }
+            },
+            {
+                source:
+                    "setCurrentMultiplier"
+            }
+        )
+    );
 }
 
 
 function markFlightCrashed(
-    timestamp =
-        Date.now()
+    crashMultiplier = null
 ) {
-    updateState(
+
+    const timestamp =
+        new Date()
+            .toISOString();
+
+
+    return updateState(
         (state) => {
+
+            if (
+                crashMultiplier !==
+                null
+            ) {
+
+                state.flight
+                    .crashMultiplier =
+                    roundTo(
+                        Number(
+                            crashMultiplier
+                        ) || 1,
+                        2
+                    );
+            }
+
+
+            if (
+                state.flight
+                    .crashMultiplier !==
+                null
+            ) {
+
+                state.flight
+                    .currentMultiplier =
+                    state.flight
+                        .crashMultiplier;
+            }
+
+
             state.flight.crashedAt =
                 timestamp;
 
+
+            state.phase =
+                GAME_PHASES.CRASHED;
+
+
             if (
-                state.flight.startedAt !==
-                null
+                state.bet.status ===
+                BET_STATUS.ACTIVE
             ) {
-                state.flight.elapsedMs =
-                    Math.max(
-                        0,
-                        timestamp -
-                        state.flight.startedAt
-                    );
+
+                state.bet.status =
+                    BET_STATUS.LOST;
             }
         },
-        ["flight"]
-    );
+        {
+            type:
+                STATE_EVENT_TYPES
+                    .PHASE_CHANGED,
 
-    return getState().flight;
-}
-
-
-/* =========================================================
-   BET
-========================================================= */
-
-function getBet() {
-    return clone(
-        roundState.bet
-    );
-}
-
-
-function hasBet() {
-    return (
-        roundState.bet.status !==
-        BET_STATUS.NONE
-    );
-}
-
-
-function hasActiveBet() {
-    return (
-        roundState.bet.status ===
-        BET_STATUS.PLACED ||
-        roundState.bet.status ===
-        BET_STATUS.ACTIVE
+            source:
+                "markFlightCrashed"
+        }
     );
 }
 
 
 /* =========================================================
-   SET BET
+   AUTO CASHOUT HELPERS
 ========================================================= */
 
-function setBet({
-    amount,
-    transactionId = null,
-    placedAt =
-        new Date().toISOString()
-}) {
-    if (
-        !isPositiveNumber(
-            amount
-        )
-    ) {
-        return {
-            success: false,
-            reason:
-                "INVALID_BET_AMOUNT"
-        };
+function setAutoCashout(
+    {
+        enabled,
+        targetMultiplier = null
     }
-
-    if (
-        roundState.bet.status !==
-        BET_STATUS.NONE
-    ) {
-        return {
-            success: false,
-            reason:
-                "BET_ALREADY_EXISTS"
-        };
-    }
-
-    updateState(
-        (state) => {
-            state.bet = {
-                status:
-                    BET_STATUS.PLACED,
-
-                amount,
-
-                placedAt,
-
-                cancelledAt: null,
-
-                activatedAt: null,
-
-                transactionId
-            };
-
-            state.result.wagered =
-                amount;
-        },
-        [
-            "bet",
-            "result.wagered"
-        ]
-    );
-
-    return {
-        success: true,
-        bet:
-            getBet()
-    };
-}
-
-
-/* =========================================================
-   ACTIVATE BET
-========================================================= */
-
-function activateBet(
-    activatedAt =
-        new Date().toISOString()
 ) {
-    if (
-        roundState.bet.status !==
-        BET_STATUS.PLACED
-    ) {
-        return {
-            success: false,
-            reason:
-                "BET_NOT_PLACED"
-        };
-    }
 
-    updateState(
+    return updateState(
         (state) => {
-            state.bet.status =
-                BET_STATUS.ACTIVE;
 
-            state.bet.activatedAt =
-                activatedAt;
-        },
-        ["bet"]
-    );
-
-    return {
-        success: true,
-        bet:
-            getBet()
-    };
-}
-
-
-/* =========================================================
-   CANCEL BET
-========================================================= */
-
-function markBetCancelled({
-    transactionId = null,
-    cancelledAt =
-        new Date().toISOString()
-} = {}) {
-    if (
-        roundState.bet.status !==
-        BET_STATUS.PLACED
-    ) {
-        return {
-            success: false,
-            reason:
-                "BET_NOT_CANCELLABLE"
-        };
-    }
-
-    updateState(
-        (state) => {
-            state.bet.status =
-                BET_STATUS.CANCELLED;
-
-            state.bet.cancelledAt =
-                cancelledAt;
-
-            if (transactionId) {
-                state.bet.transactionId =
-                    transactionId;
-            }
-
-            state.result.status =
-                ROUND_RESULT.REFUND;
-
-            state.result.returned =
-                state.bet.amount;
-
-            state.result.profit =
-                0;
-        },
-        [
-            "bet",
-            "result"
-        ]
-    );
-
-    return {
-        success: true
-    };
-}
-
-
-/* =========================================================
-   AUTO CASHOUT
-========================================================= */
-
-function setAutoCashout({
-    enabled,
-    targetMultiplier = null
-}) {
-    if (
-        typeof enabled !==
-        "boolean"
-    ) {
-        return {
-            success: false,
-            reason:
-                "INVALID_AUTO_CASHOUT_STATE"
-        };
-    }
-
-    if (
-        enabled &&
-        (
-            !isFiniteNumber(
-                targetMultiplier
-            ) ||
-            targetMultiplier <= 1
-        )
-    ) {
-        return {
-            success: false,
-            reason:
-                "INVALID_AUTO_CASHOUT_TARGET"
-        };
-    }
-
-    updateState(
-        (state) => {
-            state.autoCashout = {
-                enabled,
-
-                targetMultiplier:
+            state.autoCashout.enabled =
+                Boolean(
                     enabled
-                        ? targetMultiplier
-                        : null
-            };
+                );
+
+
+            state.autoCashout
+                .targetMultiplier =
+                enabled
+                    ? roundTo(
+                        Number(
+                            targetMultiplier
+                        ) || 0,
+                        2
+                    )
+                    : null;
         },
-        ["autoCashout"]
+        {
+            source:
+                "setAutoCashout"
+        }
     );
+}
 
-    return {
-        success: true,
 
-        autoCashout:
-            clone(
-                roundState.autoCashout
-            )
-    };
+function setAutoCashoutLocked(
+    locked
+) {
+
+    return updateState(
+        (state) => {
+
+            state.autoCashout.locked =
+                Boolean(
+                    locked
+                );
+        },
+        {
+            source:
+                "setAutoCashoutLocked"
+        }
+    );
 }
 
 
 /* =========================================================
-   CASHOUT
+   CASHOUT STATE
 ========================================================= */
-
-function hasCashedOut() {
-    return (
-        roundState
-            .cashout
-            .completed
-    );
-}
-
 
 function markCashedOut({
     multiplier,
     amount,
-    profit,
+    profit = null,
     automatic = false,
     transactionId = null,
-    completedAt =
-        new Date().toISOString()
+    completedAt = null
 }) {
-    if (
-        roundState.cashout.completed
-    ) {
-        return {
-            success: false,
-            reason:
-                "ALREADY_CASHED_OUT"
-        };
-    }
 
-    if (
-        roundState.bet.status !==
-        BET_STATUS.ACTIVE
-    ) {
-        return {
-            success: false,
-            reason:
-                "NO_ACTIVE_BET"
-        };
-    }
+    const cashoutMultiplier =
+        roundTo(
+            Number(multiplier) || 0,
+            2
+        );
 
-    if (
-        !isFiniteNumber(
-            multiplier
-        ) ||
-        multiplier < 1
-    ) {
-        return {
-            success: false,
-            reason:
-                "INVALID_CASHOUT_MULTIPLIER"
-        };
-    }
 
-    if (
-        !isNonNegativeFinite(
-            amount
-        ) ||
-        !isFiniteNumber(
-            profit
-        )
-    ) {
-        return {
-            success: false,
-            reason:
-                "INVALID_CASHOUT_VALUES"
-        };
-    }
+    const returnedAmount =
+        roundTo(
+            Number(amount) || 0,
+            2
+        );
 
-    updateState(
+
+    const calculatedProfit =
+        profit !== null
+            ? roundTo(
+                Number(profit) || 0,
+                2
+            )
+            : roundTo(
+                returnedAmount -
+                currentState.bet.amount,
+                2
+            );
+
+
+    return updateState(
         (state) => {
+
+            state.cashout.completed =
+                true;
+
+
+            state.cashout.automatic =
+                Boolean(
+                    automatic
+                );
+
+
+            state.cashout.type =
+                automatic
+                    ? CASHOUT_TYPES.AUTO
+                    : CASHOUT_TYPES.MANUAL;
+
+
+            state.cashout.multiplier =
+                cashoutMultiplier;
+
+
+            state.cashout.amount =
+                returnedAmount;
+
+
+            state.cashout.profit =
+                calculatedProfit;
+
+
+            state.cashout.completedAt =
+                completedAt ??
+                new Date()
+                    .toISOString();
+
+
+            state.cashout.transactionId =
+                transactionId;
+
+
             state.bet.status =
                 BET_STATUS.CASHED_OUT;
-
-            state.cashout = {
-                completed: true,
-
-                automatic:
-                    Boolean(automatic),
-
-                multiplier,
-
-                amount,
-
-                profit,
-
-                completedAt,
-
-                transactionId
-            };
-
-            state.result.status =
-                ROUND_RESULT.WIN;
-
-            state.result.returned =
-                amount;
-
-            state.result.profit =
-                profit;
         },
-        [
-            "bet",
-            "cashout",
-            "result"
-        ]
+        {
+            source:
+                "markCashedOut"
+        }
     );
+}
+
+
+/* =========================================================
+   SETTLEMENT STATE
+========================================================= */
+
+function beginSettlement() {
+
+    return setPhase(
+        GAME_PHASES.SETTLING,
+        {
+            source:
+                "beginSettlement"
+        }
+    );
+}
+
+
+function completeSettlement({
+    result,
+    wagered = 0,
+    returned = 0,
+    profit = 0,
+    recordId = null,
+    completedAt = null
+}) {
+
+    const validResult =
+        Object.values(
+            ROUND_RESULT
+        ).includes(
+            result
+        );
+
+
+    if (
+        !validResult
+    ) {
+
+        return {
+            success: false,
+
+            reason:
+                "INVALID_ROUND_RESULT"
+        };
+    }
+
+
+    const updated =
+        updateState(
+            (state) => {
+
+                state.settlement.completed =
+                    true;
+
+
+                state.settlement.result =
+                    result;
+
+
+                state.settlement.wagered =
+                    wagered;
+
+
+                state.settlement.returned =
+                    returned;
+
+
+                state.settlement.profit =
+                    profit;
+
+
+                state.settlement.recordId =
+                    recordId;
+
+
+                state.settlement.completedAt =
+                    completedAt ??
+                    new Date()
+                        .toISOString();
+
+
+                state.endedAt =
+                    state.settlement
+                        .completedAt;
+
+
+                state.phase =
+                    GAME_PHASES.ENDED;
+            },
+            {
+                type:
+                    STATE_EVENT_TYPES
+                        .PHASE_CHANGED,
+
+                source:
+                    "completeSettlement"
+            }
+        );
+
+
+    if (!updated) {
+
+        return {
+            success: false,
+
+            reason:
+                "STATE_UPDATE_FAILED"
+        };
+    }
+
 
     return {
+
         success: true,
 
-        cashout:
-            clone(
-                roundState.cashout
-            )
+        state:
+            updated
     };
 }
 
 
 /* =========================================================
-   BET LOSS
+   ROUND STATUS HELPERS
 ========================================================= */
 
-function markBetLost() {
-    if (
-        roundState.bet.status !==
-        BET_STATUS.ACTIVE
-    ) {
-        return {
-            success: false,
-            reason:
-                "NO_ACTIVE_BET"
-        };
-    }
+function hasPlacedBet() {
 
-    if (
-        roundState.cashout.completed
-    ) {
-        return {
-            success: false,
-            reason:
-                "BET_ALREADY_CASHED_OUT"
-        };
-    }
-
-    updateState(
-        (state) => {
-            state.bet.status =
-                BET_STATUS.LOST;
-
-            state.result.status =
-                ROUND_RESULT.LOSS;
-
-            state.result.returned =
-                0;
-
-            state.result.profit =
-                -state.bet.amount;
-        },
-        [
-            "bet",
-            "result"
-        ]
-    );
-
-    return {
-        success: true
-    };
+    return currentState.bet.status !==
+        BET_STATUS.NONE;
 }
 
 
-/* =========================================================
-   NO BET RESULT
-========================================================= */
+function hasActiveBet() {
 
-function markNoBetResult() {
-    if (
-        roundState.bet.status !==
-        BET_STATUS.NONE
-    ) {
-        return false;
-    }
-
-    updateState(
-        (state) => {
-            state.result.status =
-                ROUND_RESULT.NO_BET;
-
-            state.result.wagered =
-                0;
-
-            state.result.returned =
-                0;
-
-            state.result.profit =
-                0;
-        },
-        ["result"]
-    );
-
-    return true;
+    return currentState.bet.status ===
+        BET_STATUS.ACTIVE;
 }
 
 
-/* =========================================================
-   SETTLEMENT
-========================================================= */
+function hasCompletedCashout() {
 
-function markSettlementCompleted(
-    completedAt =
-        new Date().toISOString()
-) {
-    if (
-        roundState
-            .settlement
-            .completed
-    ) {
-        return {
-            success: false,
-            reason:
-                "SETTLEMENT_ALREADY_COMPLETED"
-        };
-    }
-
-    updateState(
-        (state) => {
-            state.settlement = {
-                completed: true,
-                completedAt
-            };
-        },
-        ["settlement"]
-    );
-
-    return {
-        success: true
-    };
+    return currentState.cashout.completed ===
+        true;
 }
 
 
-/* =========================================================
-   METADATA
-========================================================= */
+function isRoundComplete() {
 
-function setMetadata(
-    key,
-    value
-) {
-    if (
-        typeof key !== "string" ||
-        key.length === 0
-    ) {
-        return false;
-    }
-
-    updateState(
-        (state) => {
-            state.metadata[key] =
-                cloneSafe(value);
-        },
-        ["metadata"]
-    );
-
-    return true;
-}
-
-
-function getMetadata(
-    key = null
-) {
-    if (key === null) {
-        return clone(
-            roundState.metadata
-        );
-    }
-
-    return cloneSafe(
-        roundState.metadata[key]
-    );
-}
-
-
-/* =========================================================
-   ROUND SUMMARY
-========================================================= */
-
-function getRoundSummary() {
-    return {
-        roundId:
-            roundState.roundId,
-
-        phase:
-            roundState.phase,
-
-        multiplier:
-            roundState.multiplier,
-
-        crashMultiplier:
-            roundState.crashMultiplier,
-
-        bet:
-            clone(
-                roundState.bet
-            ),
-
-        autoCashout:
-            clone(
-                roundState.autoCashout
-            ),
-
-        cashout:
-            clone(
-                roundState.cashout
-            ),
-
-        result:
-            clone(
-                roundState.result
-            ),
-
-        settlement:
-            clone(
-                roundState.settlement
-            )
-    };
-}
-
-
-/* =========================================================
-   INTERNAL HELPERS
-========================================================= */
-
-function isNonNegativeFinite(
-    value
-) {
     return (
-        isFiniteNumber(value) &&
-        value >= 0
+        currentState.phase ===
+            GAME_PHASES.ENDED &&
+        currentState.settlement
+            .completed ===
+            true
     );
-}
-
-
-function cloneSafe(
-    value
-) {
-    if (
-        value === undefined
-    ) {
-        return undefined;
-    }
-
-    if (
-        value === null
-    ) {
-        return null;
-    }
-
-    try {
-        return clone(value);
-    } catch {
-        return value;
-    }
 }
 
 
@@ -1345,52 +1750,44 @@ export {
     GAME_PHASES,
     BET_STATUS,
     ROUND_RESULT,
-
-    createDefaultRoundState,
-
-    getState,
-    updateState,
-    subscribeToState,
+    CASHOUT_TYPES,
+    STATE_EVENT_TYPES,
 
     createRound,
     resetRound,
 
+    getState,
     getPhase,
+    getRoundId,
+
     isPhase,
-    canTransitionTo,
+    isRoundComplete,
+
+    updateState,
     setPhase,
 
-    getMultiplier,
-    setMultiplier,
+    setBetPlaced,
+    setBetCancelled,
+    activateBet,
+    markBetLost,
+    markBetRefunded,
 
-    getCrashMultiplier,
     setCrashMultiplier,
-
-    setCountdown,
-
-    markFlightStarted,
-    updateFlightElapsed,
+    startFlightState,
+    setCurrentMultiplier,
     markFlightCrashed,
 
-    getBet,
-    hasBet,
-    hasActiveBet,
-
-    setBet,
-    activateBet,
-    markBetCancelled,
-
     setAutoCashout,
+    setAutoCashoutLocked,
 
-    hasCashedOut,
     markCashedOut,
-    markBetLost,
-    markNoBetResult,
 
-    markSettlementCompleted,
+    beginSettlement,
+    completeSettlement,
 
-    setMetadata,
-    getMetadata,
+    hasPlacedBet,
+    hasActiveBet,
+    hasCompletedCashout,
 
-    getRoundSummary
+    subscribeToState
 };
