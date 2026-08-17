@@ -2,61 +2,72 @@
    CG FLIGHT
    js/game/cashout.js
 
-   Cashout domain layer.
+   Cash Out controller.
 
    Responsibilities:
-   - Validate manual cashout
-   - Calculate returned amount
-   - Calculate profit
-   - Credit cashout amount to wallet
-   - Mark round state as cashed out
+   - Validate manual Cash Out
    - Configure Auto Cash Out
-   - Trigger Auto Cash Out during flight
-   - Prevent cashout at / after crash point
+   - Lock Auto Cash Out after flight begins
+   - Detect Auto Cash Out from flight events
+   - Enforce strict Crash Point boundary
+   - Calculate returned amount / profit
+   - Credit Wallet exactly once
+   - Update current round state
+   - Prevent duplicate Cash Out
+   - Publish Cash Out events
 
    IMPORTANT:
-   This module does NOT:
-   - Generate crash multipliers
-   - Drive flight animation
-   - Mark losing bets after crash
-   - Perform final round settlement
-   - Write round history
+   Successful Cash Out requires:
+
+       cashoutMultiplier < crashMultiplier
+
+   Equality is NOT valid.
+
+   Example:
+       Crash 2.00×
+       Cash Out 1.99× -> WIN
+       Cash Out 2.00× -> LOSS
 ========================================================= */
+
 
 import {
     GAME_PHASES,
     BET_STATUS,
 
     getState,
-    getPhase,
-    getMultiplier,
-    getCrashMultiplier,
-
-    getBet,
 
     setAutoCashout,
-    hasCashedOut,
+    setAutoCashoutLocked,
+
     markCashedOut
 } from "./state.js";
 
-import {
-    credit,
-    WALLET_TRANSACTION_TYPES
-} from "../core/wallet.js";
 
 import {
-    roundTo,
-    isFiniteNumber
+    canCashoutBeforeCrash
+} from "./crash.js";
+
+
+import {
+    subscribeToFlight,
+    FLIGHT_EVENT_TYPES
+} from "./flight.js";
+
+
+import {
+    creditCashout
+} from "../core/wallet.js";
+
+
+import {
+    roundTo
 } from "../core/utils.js";
+
 
 import {
     playCashout,
     playAutoCashout
 } from "../core/audio.js";
-
-import {
-    subscribeToFlight
-} from "./flight.js";
 
 
 /* =========================================================
@@ -65,700 +76,353 @@ import {
 
 const CASHOUT_CONFIG = Object.freeze({
 
-    /*
-     Lowest valid cashout multiplier.
+    MIN_AUTO_MULTIPLIER:
+        1.01,
 
-     Flight begins at 1.00×, but cashout must happen after
-     takeoff and before the crash point.
-    */
-    MIN_MULTIPLIER: 1.00,
+    MAX_AUTO_MULTIPLIER:
+        999.99,
 
-    /*
-     Hard upper validation limit.
-    */
-    MAX_MULTIPLIER: 1000.00,
-
-    /*
-     Settlement precision.
-    */
-    DECIMALS: 2,
-
-    /*
-     Auto Cash Out target must be above 1.00×.
-    */
-    MIN_AUTO_CASHOUT: 1.01,
-
-    MAX_AUTO_CASHOUT: 999.99
+    DECIMALS:
+        2
 });
 
 
 /* =========================================================
-   INTERNAL AUTO CASHOUT STATE
+   CASHOUT EVENT TYPES
+========================================================= */
 
-   Used only to prevent duplicate triggers during rapid
-   requestAnimationFrame updates.
+const CASHOUT_EVENT_TYPES =
+    Object.freeze({
+
+        MANUAL_CASHOUT:
+            "MANUAL_CASHOUT",
+
+        AUTO_CASHOUT:
+            "AUTO_CASHOUT",
+
+        CASHOUT_REJECTED:
+            "CASHOUT_REJECTED",
+
+        AUTO_CONFIGURED:
+            "AUTO_CONFIGURED",
+
+        AUTO_DISABLED:
+            "AUTO_DISABLED",
+
+        AUTO_LOCKED:
+            "AUTO_LOCKED"
+    });
+
+
+/* =========================================================
+   RUNTIME
 ========================================================= */
 
 const runtime = {
-    autoCashoutProcessing: false
+
+    /*
+     Prevent two synchronous paths from entering the Wallet
+     credit section at the same time.
+    */
+    processing:
+        false,
+
+    /*
+     Used only to protect duplicate handling of the same
+     completed Cash Out.
+    */
+    completedTransactionId:
+        null
 };
 
 
 /* =========================================================
-   NORMALIZE MULTIPLIER
+   LISTENERS
 ========================================================= */
 
-function normalizeMultiplier(
-    multiplier
+const cashoutListeners =
+    new Set();
+
+
+function subscribeToCashout(
+    listener
 ) {
-    const numeric =
-        Number(multiplier);
 
     if (
-        !isFiniteNumber(
+        typeof listener !==
+        "function"
+    ) {
+        throw new TypeError(
+            "[CG Flight] Cashout listener must be a function."
+        );
+    }
+
+
+    cashoutListeners.add(
+        listener
+    );
+
+
+    return function unsubscribe() {
+
+        cashoutListeners.delete(
+            listener
+        );
+    };
+}
+
+
+/* =========================================================
+   NOTIFY
+========================================================= */
+
+function notifyCashoutListeners(
+    event
+) {
+
+    const payload = {
+
+        ...event,
+
+        timestamp:
+            event.timestamp ??
+            Date.now()
+    };
+
+
+    for (
+        const listener
+        of cashoutListeners
+    ) {
+
+        try {
+
+            listener(
+                payload
+            );
+
+        } catch (error) {
+
+            console.error(
+                "[CG Flight] Cashout listener failed:",
+                error
+            );
+        }
+    }
+}
+
+
+/* =========================================================
+   NORMALIZE AUTO MULTIPLIER
+========================================================= */
+
+function normalizeAutoCashoutMultiplier(
+    multiplier
+) {
+
+    const numeric =
+        Number(
+            multiplier
+        );
+
+
+    if (
+        !Number.isFinite(
             numeric
         )
     ) {
         return null;
     }
 
+
     const normalized =
         roundTo(
             numeric,
-            CASHOUT_CONFIG.DECIMALS
+            CASHOUT_CONFIG
+                .DECIMALS
         );
+
 
     if (
         normalized <
-            CASHOUT_CONFIG.MIN_MULTIPLIER ||
+            CASHOUT_CONFIG
+                .MIN_AUTO_MULTIPLIER ||
         normalized >
-            CASHOUT_CONFIG.MAX_MULTIPLIER
+            CASHOUT_CONFIG
+                .MAX_AUTO_MULTIPLIER
     ) {
         return null;
     }
+
 
     return normalized;
 }
 
 
 /* =========================================================
-   NORMALIZE AUTO CASHOUT TARGET
-========================================================= */
-
-function normalizeAutoCashoutTarget(
-    multiplier
-) {
-    const normalized =
-        normalizeMultiplier(
-            multiplier
-        );
-
-    if (
-        normalized === null ||
-        normalized <
-            CASHOUT_CONFIG.MIN_AUTO_CASHOUT ||
-        normalized >
-            CASHOUT_CONFIG.MAX_AUTO_CASHOUT
-    ) {
-        return null;
-    }
-
-    return normalized;
-}
-
-
-/* =========================================================
-   CALCULATE RETURNED AMOUNT
-
-   Bet amount × cashout multiplier.
-
-   Example:
-       1000 × 2.37
-       = 2370
-========================================================= */
-
-function calculateCashoutAmount(
-    betAmount,
-    multiplier
-) {
-    const bet =
-        Number(betAmount);
-
-    const rate =
-        Number(multiplier);
-
-    if (
-        !isFiniteNumber(bet) ||
-        bet <= 0 ||
-        !isFiniteNumber(rate) ||
-        rate < 1
-    ) {
-        return null;
-    }
-
-    return roundTo(
-        bet * rate,
-        CASHOUT_CONFIG.DECIMALS
-    );
-}
-
-
-/* =========================================================
-   CALCULATE PROFIT
-
-   Returned amount - original bet.
-
-   Example:
-       Bet      = 1000
-       Return   = 2370
-       Profit   = 1370
-========================================================= */
-
-function calculateCashoutProfit(
-    betAmount,
-    returnedAmount
-) {
-    const bet =
-        Number(betAmount);
-
-    const returned =
-        Number(returnedAmount);
-
-    if (
-        !isFiniteNumber(bet) ||
-        bet < 0 ||
-        !isFiniteNumber(returned) ||
-        returned < 0
-    ) {
-        return null;
-    }
-
-    return roundTo(
-        returned - bet,
-        CASHOUT_CONFIG.DECIMALS
-    );
-}
-
-
-/* =========================================================
-   CHECK CASHOUT AVAILABILITY
-========================================================= */
-
-function canCashout(
-    multiplier =
-        getMultiplier()
-) {
-    const phase =
-        getPhase();
-
-    const bet =
-        getBet();
-
-    const crashMultiplier =
-        getCrashMultiplier();
-
-
-    /* -----------------------------------------------------
-       Must currently be flying.
-    ----------------------------------------------------- */
-
-    if (
-        phase !==
-        GAME_PHASES.FLYING
-    ) {
-        return {
-            allowed: false,
-
-            reason:
-                "NOT_FLYING",
-
-            phase
-        };
-    }
-
-
-    /* -----------------------------------------------------
-       Must have an active bet.
-    ----------------------------------------------------- */
-
-    if (
-        bet.status !==
-        BET_STATUS.ACTIVE
-    ) {
-        return {
-            allowed: false,
-
-            reason:
-                "NO_ACTIVE_BET",
-
-            betStatus:
-                bet.status
-        };
-    }
-
-
-    /* -----------------------------------------------------
-       Cannot cash out twice.
-    ----------------------------------------------------- */
-
-    if (hasCashedOut()) {
-        return {
-            allowed: false,
-
-            reason:
-                "ALREADY_CASHED_OUT"
-        };
-    }
-
-
-    const normalized =
-        normalizeMultiplier(
-            multiplier
-        );
-
-
-    if (normalized === null) {
-        return {
-            allowed: false,
-
-            reason:
-                "INVALID_MULTIPLIER"
-        };
-    }
-
-
-    /* -----------------------------------------------------
-       Crash point is exclusive.
-
-       crash = 2.00×
-       cashout at 2.00× -> FAIL
-
-       Player must cash out BEFORE 2.00×.
-    ----------------------------------------------------- */
-
-    if (
-        isFiniteNumber(
-            crashMultiplier
-        ) &&
-        normalized >=
-            crashMultiplier
-    ) {
-        return {
-            allowed: false,
-
-            reason:
-                "CRASH_POINT_REACHED",
-
-            multiplier:
-                normalized,
-
-            crashMultiplier
-        };
-    }
-
-
-    return {
-        allowed: true,
-
-        multiplier:
-            normalized,
-
-        bet,
-
-        crashMultiplier
-    };
-}
-
-
-/* =========================================================
-   INTERNAL CASHOUT EXECUTION
-
-   Used by both manual and automatic cashout.
-========================================================= */
-
-function executeCashout({
-    multiplier =
-        getMultiplier(),
-
-    automatic = false
-} = {}) {
-    const validation =
-        canCashout(
-            multiplier
-        );
-
-
-    if (!validation.allowed) {
-        return {
-            success: false,
-            ...validation
-        };
-    }
-
-
-    const bet =
-        validation.bet;
-
-    const cashoutMultiplier =
-        validation.multiplier;
-
-
-    /* -----------------------------------------------------
-       Calculate settlement.
-    ----------------------------------------------------- */
-
-    const returnedAmount =
-        calculateCashoutAmount(
-            bet.amount,
-            cashoutMultiplier
-        );
-
-
-    if (returnedAmount === null) {
-        return {
-            success: false,
-
-            reason:
-                "CASHOUT_CALCULATION_FAILED"
-        };
-    }
-
-
-    const profit =
-        calculateCashoutProfit(
-            bet.amount,
-            returnedAmount
-        );
-
-
-    if (profit === null) {
-        return {
-            success: false,
-
-            reason:
-                "PROFIT_CALCULATION_FAILED"
-        };
-    }
-
-
-    /* -----------------------------------------------------
-       Credit wallet.
-
-       Important:
-       The original bet was already deducted by betting.js.
-
-       Therefore the full returned amount is credited here,
-       not just the profit.
-    ----------------------------------------------------- */
-
-    const walletResult =
-        credit(
-            returnedAmount,
-            {
-                type:
-                    automatic
-                        ? WALLET_TRANSACTION_TYPES
-                            .AUTO_CASHOUT
-                        : WALLET_TRANSACTION_TYPES
-                            .CASHOUT,
-
-                metadata: {
-                    source:
-                        automatic
-                            ? "AUTO_CASHOUT"
-                            : "MANUAL_CASHOUT",
-
-                    roundId:
-                        getState()
-                            .roundId,
-
-                    betAmount:
-                        bet.amount,
-
-                    multiplier:
-                        cashoutMultiplier,
-
-                    profit,
-
-                    originalBetTransactionId:
-                        bet.transactionId
-                }
-            }
-        );
-
-
-    if (!walletResult.success) {
-        return {
-            success: false,
-
-            reason:
-                walletResult.reason
-        };
-    }
-
-
-    /* -----------------------------------------------------
-       Mark state as cashed out.
-    ----------------------------------------------------- */
-
-    const stateResult =
-        markCashedOut({
-            multiplier:
-                cashoutMultiplier,
-
-            amount:
-                returnedAmount,
-
-            profit,
-
-            automatic,
-
-            transactionId:
-                walletResult
-                    .transaction
-                    .id
-        });
-
-
-    if (!stateResult.success) {
-        /*
-         Wallet credit already succeeded.
-
-         We intentionally do NOT automatically debit it again
-         here. settlement.js will later be the authority for
-         resolving exceptional inconsistent states.
-
-         Automatic reversal could itself create a second
-         financial error.
-        */
-
-        return {
-            success: false,
-
-            reason:
-                "CASHOUT_STATE_WRITE_FAILED",
-
-            stateReason:
-                stateResult.reason,
-
-            walletCreditCompleted:
-                true,
-
-            walletTransaction:
-                walletResult.transaction
-        };
-    }
-
-
-    /* -----------------------------------------------------
-       Audio
-    ----------------------------------------------------- */
-
-    if (automatic) {
-        playAutoCashout();
-    } else {
-        playCashout();
-    }
-
-
-    return {
-        success: true,
-
-        automatic:
-
-            Boolean(automatic),
-
-        betAmount:
-            bet.amount,
-
-        multiplier:
-            cashoutMultiplier,
-
-        returnedAmount,
-
-        profit,
-
-        balanceBefore:
-            walletResult
-                .balanceBefore,
-
-        balanceAfter:
-            walletResult
-                .balanceAfter,
-
-        transaction:
-            walletResult
-                .transaction,
-
-        cashout:
-            stateResult
-                .cashout
-    };
-}
-
-
-/* =========================================================
-   MANUAL CASHOUT
-========================================================= */
-
-function cashout() {
-    return executeCashout({
-        multiplier:
-            getMultiplier(),
-
-        automatic:
-            false
-    });
-}
-
-
-/* =========================================================
-   CASHOUT AT SPECIFIC MULTIPLIER
-
-   Mainly useful for deterministic testing.
-
-   Normal UI should call cashout() instead.
-========================================================= */
-
-function cashoutAt(
-    multiplier
-) {
-    return executeCashout({
-        multiplier,
-
-        automatic:
-            false
-    });
-}
-
-
-/* =========================================================
-   SET AUTO CASHOUT
-
-   Can be configured during BETTING or COUNTDOWN.
-
-   It may not be changed after flight begins.
+   CONFIGURE AUTO CASH OUT
 ========================================================= */
 
 function configureAutoCashout(
-    targetMultiplier
+    multiplier
 ) {
-    const phase =
-        getPhase();
+
+    const state =
+        getState();
 
 
     if (
-        phase !==
-            GAME_PHASES.BETTING &&
-        phase !==
-            GAME_PHASES.COUNTDOWN
+        state.autoCashout.locked ||
+        state.phase ===
+            GAME_PHASES.FLYING ||
+        state.phase ===
+            GAME_PHASES.CRASHED ||
+        state.phase ===
+            GAME_PHASES.SETTLING ||
+        state.phase ===
+            GAME_PHASES.ENDED
     ) {
+
         return {
             success: false,
 
             reason:
-                "AUTO_CASHOUT_LOCKED",
-
-            phase
+                "AUTO_CASHOUT_LOCKED"
         };
     }
 
 
-    const target =
-        normalizeAutoCashoutTarget(
-            targetMultiplier
+    const normalized =
+        normalizeAutoCashoutMultiplier(
+            multiplier
         );
 
 
-    if (target === null) {
+    if (
+        normalized ===
+        null
+    ) {
+
         return {
             success: false,
 
             reason:
-                "INVALID_AUTO_CASHOUT_TARGET",
-
-            min:
-                CASHOUT_CONFIG
-                    .MIN_AUTO_CASHOUT,
-
-            max:
-                CASHOUT_CONFIG
-                    .MAX_AUTO_CASHOUT
+                "INVALID_AUTO_CASHOUT_MULTIPLIER"
         };
     }
 
 
-    const result =
+    const updated =
         setAutoCashout({
-            enabled: true,
+
+            enabled:
+                true,
 
             targetMultiplier:
-                target
+                normalized
         });
 
 
-    if (!result.success) {
-        return result;
+    if (!updated) {
+
+        return {
+            success: false,
+
+            reason:
+                "STATE_UPDATE_FAILED"
+        };
     }
+
+
+    notifyCashoutListeners({
+
+        type:
+            CASHOUT_EVENT_TYPES
+                .AUTO_CONFIGURED,
+
+        roundId:
+            state.roundId,
+
+        targetMultiplier:
+            normalized
+    });
 
 
     return {
         success: true,
 
-        enabled: true,
+        enabled:
+            true,
 
         targetMultiplier:
-            target
+            normalized
     };
 }
 
 
 /* =========================================================
-   DISABLE AUTO CASHOUT
-
-   Can only be changed before flight begins.
+   DISABLE AUTO CASH OUT
 ========================================================= */
 
 function disableAutoCashout() {
-    const phase =
-        getPhase();
+
+    const state =
+        getState();
 
 
     if (
-        phase !==
-            GAME_PHASES.BETTING &&
-        phase !==
-            GAME_PHASES.COUNTDOWN
+        state.autoCashout.locked ||
+        state.phase ===
+            GAME_PHASES.FLYING
     ) {
+
         return {
             success: false,
 
             reason:
-                "AUTO_CASHOUT_LOCKED",
-
-            phase
+                "AUTO_CASHOUT_LOCKED"
         };
     }
 
 
-    const result =
+    const updated =
         setAutoCashout({
-            enabled: false,
+
+            enabled:
+                false,
 
             targetMultiplier:
                 null
         });
 
 
-    if (!result.success) {
-        return result;
+    if (!updated) {
+
+        return {
+            success: false,
+
+            reason:
+                "STATE_UPDATE_FAILED"
+        };
     }
+
+
+    notifyCashoutListeners({
+
+        type:
+            CASHOUT_EVENT_TYPES
+                .AUTO_DISABLED,
+
+        roundId:
+            state.roundId
+    });
 
 
     return {
         success: true,
 
-        enabled: false,
+        enabled:
+            false,
 
         targetMultiplier:
             null
@@ -771,110 +435,50 @@ function disableAutoCashout() {
 ========================================================= */
 
 function getAutoCashoutStatus() {
+
     const state =
         getState();
 
+
     return {
+
         enabled:
-            state.autoCashout
-                .enabled,
+            state.autoCashout.enabled,
 
         targetMultiplier:
             state.autoCashout
                 .targetMultiplier,
 
         locked:
-            state.phase ===
-                GAME_PHASES.FLYING ||
-            state.phase ===
-                GAME_PHASES.CRASHED ||
-            state.phase ===
-                GAME_PHASES.SETTLING ||
-            state.phase ===
-                GAME_PHASES.ENDED
+            state.autoCashout.locked,
+
+        phase:
+            state.phase
     };
 }
 
 
 /* =========================================================
-   CHECK AUTO CASHOUT
-
-   Called during multiplier updates.
-
-   The target itself is used for settlement instead of the
-   rendered current multiplier.
-
-   Example:
-       Target       = 2.00×
-       Frame update = 2.01×
-
-   Settlement still happens at exactly 2.00×,
-   provided crash point is strictly above 2.00×.
+   CAN CASH OUT
 ========================================================= */
 
-function processAutoCashout(
-    currentMultiplier =
-        getMultiplier()
-) {
-    if (
-        runtime
-            .autoCashoutProcessing
-    ) {
-        return {
-            success: false,
-
-            triggered: false,
-
-            reason:
-                "AUTO_CASHOUT_PROCESSING"
-        };
-    }
-
+function canCashout({
+    multiplier = null
+} = {}) {
 
     const state =
         getState();
 
-    const auto =
-        state.autoCashout;
-
-
-    if (!auto.enabled) {
-        return {
-            success: true,
-
-            triggered: false,
-
-            reason:
-                "AUTO_CASHOUT_DISABLED"
-        };
-    }
-
 
     if (
-        state.cashout.completed
+        !state.roundId
     ) {
-        return {
-            success: true,
 
-            triggered: false,
+        return {
+            valid: false,
 
             reason:
-                "ALREADY_CASHED_OUT"
-        };
-    }
-
-
-    if (
-        state.bet.status !==
-        BET_STATUS.ACTIVE
-    ) {
-        return {
-            success: true,
-
-            triggered: false,
-
-            reason:
-                "NO_ACTIVE_BET"
+                "NO_ACTIVE_ROUND"
         };
     }
 
@@ -883,10 +487,9 @@ function processAutoCashout(
         state.phase !==
         GAME_PHASES.FLYING
     ) {
-        return {
-            success: true,
 
-            triggered: false,
+        return {
+            valid: false,
 
             reason:
                 "NOT_FLYING"
@@ -894,306 +497,915 @@ function processAutoCashout(
     }
 
 
-    const target =
-        normalizeAutoCashoutTarget(
-            auto.targetMultiplier
-        );
+    if (
+        state.bet.status !==
+        BET_STATUS.ACTIVE
+    ) {
 
-
-    if (target === null) {
         return {
-            success: false,
-
-            triggered: false,
+            valid: false,
 
             reason:
-                "INVALID_AUTO_CASHOUT_TARGET"
+                "NO_ACTIVE_BET"
         };
     }
 
 
-    const current =
-        normalizeMultiplier(
-            currentMultiplier
-        );
+    if (
+        state.cashout.completed
+    ) {
 
-
-    if (current === null) {
         return {
-            success: false,
-
-            triggered: false,
+            valid: false,
 
             reason:
-                "INVALID_CURRENT_MULTIPLIER"
+                "ALREADY_CASHED_OUT"
         };
     }
 
 
-    /* -----------------------------------------------------
-       Target has not been reached yet.
-    ----------------------------------------------------- */
+    if (
+        runtime.processing
+    ) {
 
-    if (current < target) {
         return {
-            success: true,
-
-            triggered: false,
+            valid: false,
 
             reason:
-                "TARGET_NOT_REACHED",
-
-            targetMultiplier:
-                target,
-
-            currentMultiplier:
-                current
+                "CASHOUT_PROCESSING"
         };
     }
 
 
     const crashMultiplier =
-        getCrashMultiplier();
+        Number(
+            state.flight
+                .crashMultiplier
+        );
 
 
-    /* -----------------------------------------------------
-       Auto Cash Out must be STRICTLY before crash point.
+    const requestedMultiplier =
+        multiplier === null
+            ? Number(
+                state.flight
+                    .currentMultiplier
+            )
+            : Number(
+                multiplier
+            );
 
-       Example:
-       target = 2.00
-       crash  = 2.00
-       => LOSE
-
-       target = 1.99
-       crash  = 2.00
-       => WIN
-    ----------------------------------------------------- */
 
     if (
-        !isFiniteNumber(
-            crashMultiplier
+        !Number.isFinite(
+            requestedMultiplier
         ) ||
-        target >=
+        !Number.isFinite(
             crashMultiplier
+        )
     ) {
-        return {
-            success: true,
 
-            triggered: false,
+        return {
+            valid: false,
 
             reason:
-                "CRASH_BEFORE_AUTO_CASHOUT",
+                "INVALID_MULTIPLIER"
+        };
+    }
 
-            targetMultiplier:
-                target,
+
+    if (
+        !canCashoutBeforeCrash(
+            requestedMultiplier,
+            crashMultiplier
+        )
+    ) {
+
+        return {
+            valid: false,
+
+            reason:
+                "CRASH_POINT_REACHED",
+
+            multiplier:
+                requestedMultiplier,
 
             crashMultiplier
         };
     }
 
 
-    runtime.autoCashoutProcessing =
+    return {
+        valid: true,
+
+        reason:
+            null,
+
+        multiplier:
+            requestedMultiplier,
+
+        crashMultiplier,
+
+        betAmount:
+            state.bet.amount
+    };
+}
+
+
+/* =========================================================
+   CASH OUT PREVIEW
+========================================================= */
+
+function previewCashout(
+    multiplier = null
+) {
+
+    const state =
+        getState();
+
+
+    const betAmount =
+        Math.max(
+            0,
+            Number(
+                state.bet.amount
+            ) || 0
+        );
+
+
+    const selectedMultiplier =
+        multiplier === null
+            ? Number(
+                state.flight
+                    .currentMultiplier
+            ) || 1
+            : Number(
+                multiplier
+            ) || 1;
+
+
+    const normalizedMultiplier =
+        Math.max(
+            1,
+            roundTo(
+                selectedMultiplier,
+                CASHOUT_CONFIG
+                    .DECIMALS
+            )
+        );
+
+
+    const amount =
+        roundTo(
+            betAmount *
+            normalizedMultiplier,
+            CASHOUT_CONFIG
+                .DECIMALS
+        );
+
+
+    const profit =
+        roundTo(
+            amount -
+            betAmount,
+            CASHOUT_CONFIG
+                .DECIMALS
+        );
+
+
+    const validation =
+        canCashout({
+            multiplier:
+                normalizedMultiplier
+        });
+
+
+    return {
+
+        available:
+            validation.valid,
+
+        reason:
+            validation.reason,
+
+        betAmount,
+
+        multiplier:
+            normalizedMultiplier,
+
+        amount,
+
+        profit,
+
+        crashMultiplier:
+            state.flight
+                .crashMultiplier
+    };
+}
+
+
+/* =========================================================
+   INTERNAL EXECUTE CASHOUT
+
+   ALL Cash Outs pass through this function.
+
+   This guarantees:
+   - one Wallet credit path
+   - one State update path
+   - one duplicate protection mechanism
+========================================================= */
+
+function executeCashout({
+    multiplier,
+    automatic = false
+}) {
+
+    if (
+        runtime.processing
+    ) {
+
+        return {
+            success: false,
+
+            reason:
+                "CASHOUT_PROCESSING"
+        };
+    }
+
+
+    const validation =
+        canCashout({
+            multiplier
+        });
+
+
+    if (
+        !validation.valid
+    ) {
+
+        notifyCashoutListeners({
+
+            type:
+                CASHOUT_EVENT_TYPES
+                    .CASHOUT_REJECTED,
+
+            automatic,
+
+            reason:
+                validation.reason,
+
+            multiplier:
+                validation.multiplier ??
+                multiplier,
+
+            crashMultiplier:
+                validation.crashMultiplier ??
+                null
+        });
+
+
+        return {
+            success: false,
+
+            reason:
+                validation.reason,
+
+            crashMultiplier:
+                validation.crashMultiplier ??
+                null
+        };
+    }
+
+
+    runtime.processing =
         true;
 
 
     try {
-        const result =
-            executeCashout({
-                multiplier:
-                    target,
 
-                automatic:
-                    true
+        /*
+         Re-read immediately before money movement.
+
+         This protects against another synchronous Cash Out
+         path that may already have changed State.
+        */
+
+        const state =
+            getState();
+
+
+        if (
+            state.cashout.completed ||
+            state.bet.status !==
+                BET_STATUS.ACTIVE ||
+            state.phase !==
+                GAME_PHASES.FLYING
+        ) {
+
+            return {
+                success: false,
+
+                reason:
+                    "CASHOUT_NO_LONGER_AVAILABLE"
+            };
+        }
+
+
+        const normalizedMultiplier =
+            roundTo(
+                Number(
+                    multiplier
+                ),
+                CASHOUT_CONFIG
+                    .DECIMALS
+            );
+
+
+        /*
+         Recheck the strict Crash boundary from the newest
+         State immediately before credit.
+        */
+
+        if (
+            !canCashoutBeforeCrash(
+                normalizedMultiplier,
+                state.flight
+                    .crashMultiplier
+            )
+        ) {
+
+            return {
+                success: false,
+
+                reason:
+                    "CRASH_POINT_REACHED"
+            };
+        }
+
+
+        const betAmount =
+            roundTo(
+                state.bet.amount,
+                CASHOUT_CONFIG
+                    .DECIMALS
+            );
+
+
+        const returnedAmount =
+            roundTo(
+                betAmount *
+                normalizedMultiplier,
+                CASHOUT_CONFIG
+                    .DECIMALS
+            );
+
+
+        const profit =
+            roundTo(
+                returnedAmount -
+                betAmount,
+                CASHOUT_CONFIG
+                    .DECIMALS
+            );
+
+
+        /* -------------------------------------------------
+           Wallet credit first.
+
+           If Wallet fails, State remains ACTIVE.
+        -------------------------------------------------- */
+
+        const creditResult =
+            creditCashout(
+                returnedAmount,
+                {
+                    roundId:
+                        state.roundId,
+
+                    multiplier:
+                        normalizedMultiplier,
+
+                    automatic
+                }
+            );
+
+
+        if (
+            !creditResult.success
+        ) {
+
+            return {
+                success: false,
+
+                reason:
+                    "CASHOUT_CREDIT_FAILED",
+
+                walletReason:
+                    creditResult.reason
+            };
+        }
+
+
+        /* -------------------------------------------------
+           Update round State.
+        -------------------------------------------------- */
+
+        const completedAt =
+            new Date()
+                .toISOString();
+
+
+        const updated =
+            markCashedOut({
+
+                multiplier:
+                    normalizedMultiplier,
+
+                amount:
+                    returnedAmount,
+
+                profit,
+
+                automatic,
+
+                transactionId:
+                    creditResult
+                        .transactionId,
+
+                completedAt
             });
 
 
-        return {
-            ...result,
+        if (!updated) {
 
-            triggered:
-                result.success
+            /*
+             Wallet has already been credited.
+
+             Do NOT attempt to debit it back, because a
+             rollback debit could create a second failure.
+
+             Settlement can later detect this exceptional
+             state if necessary.
+            */
+
+            return {
+                success: false,
+
+                reason:
+                    "CASHOUT_STATE_UPDATE_FAILED_AFTER_CREDIT",
+
+                returnedAmount,
+
+                transactionId:
+                    creditResult
+                        .transactionId
+            };
+        }
+
+
+        runtime.completedTransactionId =
+            creditResult
+                .transactionId;
+
+
+        if (
+            automatic
+        ) {
+
+            playAutoCashout();
+
+        } else {
+
+            playCashout();
+        }
+
+
+        const eventType =
+            automatic
+                ? CASHOUT_EVENT_TYPES
+                    .AUTO_CASHOUT
+                : CASHOUT_EVENT_TYPES
+                    .MANUAL_CASHOUT;
+
+
+        notifyCashoutListeners({
+
+            type:
+                eventType,
+
+            roundId:
+                state.roundId,
+
+            automatic,
+
+            multiplier:
+                normalizedMultiplier,
+
+            betAmount,
+
+            returnedAmount,
+
+            profit,
+
+            transactionId:
+                creditResult
+                    .transactionId,
+
+            completedAt
+        });
+
+
+        return {
+            success: true,
+
+            roundId:
+                state.roundId,
+
+            automatic,
+
+            multiplier:
+                normalizedMultiplier,
+
+            betAmount,
+
+            returnedAmount,
+
+            amount:
+                returnedAmount,
+
+            profit,
+
+            transactionId:
+                creditResult
+                    .transactionId,
+
+            balance:
+                creditResult.balance,
+
+            completedAt
         };
+
     } finally {
-        runtime.autoCashoutProcessing =
+
+        runtime.processing =
             false;
     }
 }
 
 
 /* =========================================================
-   PREVIEW CASHOUT
-
-   Does not modify wallet/state.
-
-   Useful for displaying:
-
-       CASH OUT
-       2,370
-
-   while multiplier rises.
+   MANUAL CASH OUT
 ========================================================= */
 
-function previewCashout(
-    multiplier =
-        getMultiplier()
-) {
-    const bet =
-        getBet();
+function cashout() {
+
+    const state =
+        getState();
 
 
-    if (
-        bet.status !==
-            BET_STATUS.PLACED &&
-        bet.status !==
-            BET_STATUS.ACTIVE
-    ) {
-        return {
-            available: false,
+    /*
+     Manual Cash Out uses the currently displayed/runtime
+     multiplier.
 
-            amount: 0,
+     It must still be strictly below Crash Point.
+    */
 
-            profit: 0,
-
-            multiplier:
-                normalizeMultiplier(
-                    multiplier
-                ) ?? 1
-        };
-    }
-
-
-    const normalized =
-        normalizeMultiplier(
-            multiplier
+    const multiplier =
+        roundTo(
+            Number(
+                state.flight
+                    .currentMultiplier
+            ) || 1,
+            CASHOUT_CONFIG
+                .DECIMALS
         );
 
 
-    if (normalized === null) {
-        return {
-            available: false,
+    return executeCashout({
 
-            amount: 0,
+        multiplier,
 
-            profit: 0,
-
-            multiplier: 1
-        };
-    }
-
-
-    const amount =
-        calculateCashoutAmount(
-            bet.amount,
-            normalized
-        );
-
-
-    const profit =
-        calculateCashoutProfit(
-            bet.amount,
-            amount
-        );
-
-
-    return {
-        available:
-            getPhase() ===
-                GAME_PHASES.FLYING &&
-            bet.status ===
-                BET_STATUS.ACTIVE &&
-            !hasCashedOut(),
-
-        betAmount:
-            bet.amount,
-
-        multiplier:
-            normalized,
-
-        amount:
-            amount ?? 0,
-
-        profit:
-            profit ?? 0
-    };
+        automatic:
+            false
+    });
 }
 
 
 /* =========================================================
-   FLIGHT EVENT INTEGRATION
+   AUTO CASHOUT CHECK
 
-   Auto Cash Out listens directly to multiplier updates.
+   Auto Cash Out is evaluated on every normal
+   MULTIPLIER_UPDATE event.
 
-   flight.js emits MULTIPLIER_UPDATE synchronously.
+   IMPORTANT:
+   flight.js checks Crash BEFORE it emits MULTIPLIER_UPDATE.
 
-   processAutoCashout() still checks the hidden crash point,
-   so reaching the exact crash multiplier cannot produce a
-   successful Auto Cash Out.
+   Therefore:
+       target === crash
+   can never Auto Cash Out successfully.
+========================================================= */
+
+function handleMultiplierUpdate(
+    event
+) {
+
+    const state =
+        getState();
+
+
+    if (
+        state.phase !==
+        GAME_PHASES.FLYING
+    ) {
+        return;
+    }
+
+
+    if (
+        state.bet.status !==
+        BET_STATUS.ACTIVE
+    ) {
+        return;
+    }
+
+
+    if (
+        state.cashout.completed
+    ) {
+        return;
+    }
+
+
+    if (
+        !state.autoCashout.enabled
+    ) {
+        return;
+    }
+
+
+    const target =
+        Number(
+            state.autoCashout
+                .targetMultiplier
+        );
+
+
+    if (
+        !Number.isFinite(
+            target
+        )
+    ) {
+        return;
+    }
+
+
+    /*
+     Absolute safety rule:
+
+       Auto Target MUST be strictly below Crash Point.
+
+     This check is performed even though flight.js event
+     ordering already protects equality.
+    */
+
+    if (
+        !canCashoutBeforeCrash(
+            target,
+            state.flight
+                .crashMultiplier
+        )
+    ) {
+        return;
+    }
+
+
+    const currentRaw =
+        Number(
+            event.rawMultiplier ??
+            event.multiplier
+        );
+
+
+    if (
+        !Number.isFinite(
+            currentRaw
+        )
+    ) {
+        return;
+    }
+
+
+    /*
+     Cross-frame trigger.
+
+     Example:
+         previous display: 1.99
+         next raw frame:   2.013
+         target:           2.00
+
+     We Cash Out at exactly 2.00×.
+    */
+
+    if (
+        currentRaw >=
+        target
+    ) {
+
+        executeCashout({
+
+            multiplier:
+                target,
+
+            automatic:
+                true
+        });
+    }
+}
+
+
+/* =========================================================
+   FLIGHT START
+
+   state.js already locks Auto Cash Out in
+   startFlightState(), but this keeps the behavior explicit.
+========================================================= */
+
+function handleFlightStart() {
+
+    const state =
+        getState();
+
+
+    if (
+        !state.autoCashout.locked
+    ) {
+
+        setAutoCashoutLocked(
+            true
+        );
+    }
+
+
+    notifyCashoutListeners({
+
+        type:
+            CASHOUT_EVENT_TYPES
+                .AUTO_LOCKED,
+
+        roundId:
+            state.roundId,
+
+        enabled:
+            state.autoCashout.enabled,
+
+        targetMultiplier:
+            state.autoCashout
+                .targetMultiplier
+    });
+}
+
+
+/* =========================================================
+   FLIGHT EVENT HANDLER
+========================================================= */
+
+function handleFlightEvent(
+    event
+) {
+
+    switch (
+        event.type
+    ) {
+
+        case FLIGHT_EVENT_TYPES
+            .FLIGHT_START:
+
+            handleFlightStart();
+
+            break;
+
+
+        case FLIGHT_EVENT_TYPES
+            .MULTIPLIER_UPDATE:
+
+            handleMultiplierUpdate(
+                event
+            );
+
+            break;
+
+
+        default:
+            break;
+    }
+}
+
+
+/* =========================================================
+   SUBSCRIBE TO FLIGHT ENGINE
+
+   Cashout owns its own Auto Cash Out detection.
+
+   pages/game.js does NOT need to perform Auto logic.
 ========================================================= */
 
 subscribeToFlight(
-    (event) => {
-        if (
-            event.type !==
-            "MULTIPLIER_UPDATE"
-        ) {
-            return;
-        }
-
-
-        processAutoCashout(
-            event.multiplier
-        );
-    }
+    handleFlightEvent
 );
 
 
 /* =========================================================
-   RESET RUNTIME
+   RESET CASHOUT RUNTIME
 
-   state.js resets auto cashout as part of a new round.
-   This only clears the transient processing guard.
+   Called before a new round.
+
+   State itself is reset by createRound().
 ========================================================= */
 
 function resetCashoutRuntime() {
-    runtime.autoCashoutProcessing =
+
+    runtime.processing =
         false;
+
+
+    runtime.completedTransactionId =
+        null;
+
 
     return true;
 }
 
 
 /* =========================================================
-   CASHOUT STATUS
+   GET CASHOUT STATUS
 ========================================================= */
 
 function getCashoutStatus() {
+
     const state =
         getState();
 
+
     return {
+
+        roundId:
+            state.roundId,
+
         phase:
             state.phase,
 
         betStatus:
             state.bet.status,
 
+        completed:
+            state.cashout.completed,
+
+        automatic:
+            state.cashout.automatic,
+
+        type:
+            state.cashout.type,
+
         multiplier:
-            state.multiplier,
+            state.cashout.multiplier,
 
-        crashMultiplier:
-            state.crashMultiplier,
+        amount:
+            state.cashout.amount,
 
-        canCashout:
-            canCashout(
-                state.multiplier
-            ).allowed,
+        profit:
+            state.cashout.profit,
 
-        cashout:
-            state.cashout,
+        transactionId:
+            state.cashout.transactionId,
 
-        autoCashout:
-            state.autoCashout
+        processing:
+            runtime.processing
     };
+}
+
+
+/* =========================================================
+   COMPATIBILITY ALIASES
+========================================================= */
+
+function performCashout() {
+
+    return cashout();
+}
+
+
+function enableAutoCashout(
+    multiplier
+) {
+
+    return configureAutoCashout(
+        multiplier
+    );
+}
+
+
+function clearAutoCashout() {
+
+    return disableAutoCashout();
 }
 
 
@@ -1203,24 +1415,27 @@ function getCashoutStatus() {
 
 export {
     CASHOUT_CONFIG,
+    CASHOUT_EVENT_TYPES,
 
-    normalizeAutoCashoutTarget,
-
-    calculateCashoutAmount,
-    calculateCashoutProfit,
-
-    canCashout,
-
-    cashout,
-    cashoutAt,
+    normalizeAutoCashoutMultiplier,
 
     configureAutoCashout,
     disableAutoCashout,
-    getAutoCashoutStatus,
-    processAutoCashout,
 
+    getAutoCashoutStatus,
+
+    canCashout,
     previewCashout,
 
+    cashout,
+    getCashoutStatus,
+
     resetCashoutRuntime,
-    getCashoutStatus
+
+    subscribeToCashout,
+
+    /* Compatibility */
+    performCashout,
+    enableAutoCashout,
+    clearAutoCashout
 };
