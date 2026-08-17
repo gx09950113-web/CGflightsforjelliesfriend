@@ -1,0 +1,1199 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <meta
+        name="description"
+        content="CG Flight - 遊戲規則與玩法說明"
+    >
+
+    <title>CG Flight - Rules</title>
+
+    <!-- Favicon -->
+    <link
+        rel="icon"
+        type="image/png"
+        href="./assets/images/favicon.png"
+    >
+
+    <!-- Styles -->
+    <link
+        rel="stylesheet"
+        href="./css/common.css"
+    >
+
+    <link
+        rel="stylesheet"
+        href="./css/rules.css"
+    >
+</head>
+
+<body>
+
+    <!-- =========================================================
+         APP
+    ========================================================== -->
+    <div
+        id="app"
+        class="app rules-app"
+    >
+
+        <!-- =====================================================
+             BACKGROUND
+        ====================================================== -->
+        <div
+            class="rules-background"
+            aria-hidden="true"
+        ></div>
+
+
+        <!-- =====================================================
+             HEADER
+        ====================================================== -->
+        <header class="rules-header">
+
+            <!-- Left -->
+            <div class="rules-header-left">
+
+                <a
+                    id="backButton"
+                    class="icon-button"
+                    href="./index.html"
+                    aria-label="返回大廳"
+                    title="返回大廳"
+                >
+                    <img
+                        src="./assets/icons/back.svg"
+                        alt=""
+                        aria-hidden="true"
+                    >
+                </a>
+
+
+                <a
+                    class="rules-brand"
+                    href="./index.html"
+                    aria-label="CG Flight 大廳"
+                >
+                    <img
+                        class="rules-brand-logo"
+                        src="./assets/images/logo-small.webp"
+                        alt="CG Flight"
+                    >
+                </a>
+
+            </div>
+
+
+            <!-- Center -->
+            <div class="rules-header-center">
+
+                <div class="rules-page-title">
+
+                    <img
+                        src="./assets/icons/rules.svg"
+                        alt=""
+                        aria-hidden="true"
+                    >
+
+                    <div>
+                        <span>
+                            GAME GUIDE
+                        </span>
+
+                        <h1>
+                            Rules
+                        </h1>
+                    </div>
+
+                </div>
+
+            </div>
+
+
+            <!-- Right -->
+            <div class="rules-header-right">
+
+                <!-- Wallet -->
+                <div
+                    class="rules-wallet"
+                    aria-label="玩家代幣餘額"
+                >
+                    <img
+                        src="./assets/icons/coin.svg"
+                        alt=""
+                        aria-hidden="true"
+                    >
+
+                    <div class="rules-wallet-content">
+
+                        <span class="rules-wallet-label">
+                            BALANCE
+                        </span>
+
+                        <strong
+                            id="walletBalance"
+                            class="rules-wallet-balance"
+                        >
+                            0
+                        </strong>
+
+                    </div>
+                </div>
+
+
+                <!-- Sound -->
+                <button
+                    id="soundToggleButton"
+                    class="icon-button"
+                    type="button"
+                    aria-label="切換音效"
+                    title="音效"
+                >
+                    <img
+                        id="soundToggleIcon"
+                        src="./assets/icons/sound-on.svg"
+                        alt=""
+                        aria-hidden="true"
+                    >
+                </button>
+
+
+                <!-- Music -->
+                <button
+                    id="musicToggleButton"
+                    class="icon-button"
+                    type="button"
+                    aria-label="切換背景音樂"
+                    title="背景音樂"
+                >
+                    <img
+                        id="musicToggleIcon"
+                        src="./assets/icons/music-on.svg"
+                        alt=""
+                        aria-hidden="true"
+                    >
+                </button>
+
+
+                <!-- Settings -->
+                <button
+                    id="settingsButton"
+                    class="icon-button"
+                    type="button"
+                    aria-label="開啟設定"
+                    title="設定"
+                >
+                    <img
+                        src="./assets/icons/settings.svg"
+                        alt=""
+                        aria-hidden="true"
+                    >
+                </button>
+
+            </div>
+
+        </header>
+
+
+        <!-- =====================================================
+             MAIN
+        ====================================================== -->
+        <main class="rules-main">
+
+
+            <!-- =================================================
+                 HERO
+            ================================================== -->
+            <section class="rules-hero">
+
+                <div class="rules-hero-copy">
+
+                    <span class="rules-hero-eyebrow">
+                        HOW TO PLAY
+                    </span>
+
+                    <h2>
+                        在飛機墜毀前完成 Cash Out
+                    </h2>
+
+                    <p>
+                        每一局飛行都會產生一個隱藏的墜毀倍率。飛機起飛後，畫面倍率會從 1.00× 持續上升；玩家必須在抵達墜毀倍率以前 Cash Out，才能成功取得本局返回代幣。
+                    </p>
+
+                </div>
+
+
+                <a
+                    class="rules-play-button"
+                    href="./game.html"
+                >
+                    <img
+                        src="./assets/icons/plane.svg"
+                        alt=""
+                        aria-hidden="true"
+                    >
+
+                    <span>
+                        START FLIGHT
+                    </span>
+                </a>
+
+            </section>
+
+
+            <!-- =================================================
+                 QUICK FLOW
+            ================================================== -->
+            <section
+                class="rules-section"
+                aria-labelledby="quickFlowTitle"
+            >
+
+                <div class="rules-section-heading">
+
+                    <img
+                        src="./assets/icons/plane.svg"
+                        alt=""
+                        aria-hidden="true"
+                    >
+
+                    <div>
+                        <span>
+                            ROUND FLOW
+                        </span>
+
+                        <h2 id="quickFlowTitle">
+                            單局流程
+                        </h2>
+                    </div>
+
+                </div>
+
+
+                <div class="rules-flow">
+
+                    <article class="rules-flow-step">
+
+                        <span class="rules-flow-number">
+                            01
+                        </span>
+
+                        <h3>
+                            下注
+                        </h3>
+
+                        <p>
+                            在 BETTING 階段輸入下注金額並確認下注。下注成功後，代幣會立即從錢包扣除。
+                        </p>
+
+                    </article>
+
+
+                    <article class="rules-flow-step">
+
+                        <span class="rules-flow-number">
+                            02
+                        </span>
+
+                        <h3>
+                            等待起飛
+                        </h3>
+
+                        <p>
+                            BETTING 結束後進入起飛倒數。在正式起飛前，只要下注仍為 PLACED 狀態，就可以取消並取回下注金額。
+                        </p>
+
+                    </article>
+
+
+                    <article class="rules-flow-step">
+
+                        <span class="rules-flow-number">
+                            03
+                        </span>
+
+                        <h3>
+                            飛行
+                        </h3>
+
+                        <p>
+                            倒數結束後下注正式啟用，倍率從 1.00× 持續上升。此時下注不能取消，只能選擇 Cash Out。
+                        </p>
+
+                    </article>
+
+
+                    <article class="rules-flow-step">
+
+                        <span class="rules-flow-number">
+                            04
+                        </span>
+
+                        <h3>
+                            Cash Out
+                        </h3>
+
+                        <p>
+                            在 Crash Point 以前完成 Cash Out，即可依「下注金額 × Cash Out 倍率」取得返回代幣。
+                        </p>
+
+                    </article>
+
+
+                    <article class="rules-flow-step">
+
+                        <span class="rules-flow-number">
+                            05
+                        </span>
+
+                        <h3>
+                            Crash
+                        </h3>
+
+                        <p>
+                            若飛機先抵達墜毀倍率，而下注仍未 Cash Out，該筆下注即視為 LOSS，本局下注金額全數損失。
+                        </p>
+
+                    </article>
+
+                </div>
+
+            </section>
+
+
+            <!-- =================================================
+                 BETTING RULES
+            ================================================== -->
+            <section
+                class="rules-section"
+                aria-labelledby="bettingRulesTitle"
+            >
+
+                <div class="rules-section-heading">
+
+                    <img
+                        src="./assets/icons/bet.svg"
+                        alt=""
+                        aria-hidden="true"
+                    >
+
+                    <div>
+                        <span>
+                            BETTING
+                        </span>
+
+                        <h2 id="bettingRulesTitle">
+                            下注規則
+                        </h2>
+                    </div>
+
+                </div>
+
+
+                <div class="rules-content-grid">
+
+                    <article class="rules-info-card">
+
+                        <h3>
+                            下注金額
+                        </h3>
+
+                        <p>
+                            每局最低下注 1 代幣，單局最高下注 1,000,000 代幣。玩家錢包餘額不足時，下注不會成立。
+                        </p>
+
+                    </article>
+
+
+                    <article class="rules-info-card">
+
+                        <h3>
+                            扣款時間
+                        </h3>
+
+                        <p>
+                            玩家按下 PLACE BET 並成功下注後，下注金額會立即從 Wallet 扣除，而不是等到飛機起飛後才扣款。
+                        </p>
+
+                    </article>
+
+
+                    <article class="rules-info-card">
+
+                        <h3>
+                            取消下注
+                        </h3>
+
+                        <p>
+                            下注仍為 PLACED 狀態時可以取消。取消成功後，原下注金額會完整退回，不產生任何輸贏結果。
+                        </p>
+
+                    </article>
+
+
+                    <article class="rules-info-card">
+
+                        <h3>
+                            正式啟用
+                        </h3>
+
+                        <p>
+                            飛機正式起飛時，下注會從 PLACED 轉為 ACTIVE。從這一刻開始，玩家不能再取消下注。
+                        </p>
+
+                    </article>
+
+                </div>
+
+            </section>
+
+
+            <!-- =================================================
+                 CASHOUT RULES
+            ================================================== -->
+            <section
+                class="rules-section"
+                aria-labelledby="cashoutRulesTitle"
+            >
+
+                <div class="rules-section-heading">
+
+                    <img
+                        src="./assets/icons/cashout.svg"
+                        alt=""
+                        aria-hidden="true"
+                    >
+
+                    <div>
+                        <span>
+                            CASH OUT
+                        </span>
+
+                        <h2 id="cashoutRulesTitle">
+                            Cash Out 規則
+                        </h2>
+                    </div>
+
+                </div>
+
+
+                <div class="rules-example-panel">
+
+                    <div class="rules-example-formula">
+
+                        <span>
+                            BET
+                        </span>
+
+                        <strong>
+                            1,000
+                        </strong>
+
+                        <span class="rules-example-operator">
+                            ×
+                        </span>
+
+                        <span>
+                            CASH OUT
+                        </span>
+
+                        <strong>
+                            2.37×
+                        </strong>
+
+                        <span class="rules-example-operator">
+                            =
+                        </span>
+
+                        <span>
+                            RETURN
+                        </span>
+
+                        <strong class="is-positive">
+                            2,370
+                        </strong>
+
+                    </div>
+
+
+                    <p>
+                        此例中下注 1,000，於 2.37× Cash Out，因此返回 2,370 代幣。本局淨收益為 +1,370。
+                    </p>
+
+                </div>
+
+
+                <div class="rules-content-grid">
+
+                    <article class="rules-info-card">
+
+                        <h3>
+                            手動 Cash Out
+                        </h3>
+
+                        <p>
+                            飛行期間若有 ACTIVE Bet，玩家可以隨時按下 CASH OUT。成功後該局下注立即變成 CASHED_OUT。
+                        </p>
+
+                    </article>
+
+
+                    <article class="rules-info-card">
+
+                        <h3>
+                            返回金額
+                        </h3>
+
+                        <p>
+                            返回金額為下注金額乘以實際 Cash Out 倍率。Wallet 會收到完整返回金額，而非只增加淨利潤。
+                        </p>
+
+                    </article>
+
+
+                    <article class="rules-info-card">
+
+                        <h3>
+                            Cash Out 後
+                        </h3>
+
+                        <p>
+                            成功 Cash Out 後，即使飛機稍後墜毀，本局玩家結果仍然是 WIN，不會再扣除任何代幣。
+                        </p>
+
+                    </article>
+
+
+                    <article class="rules-info-card">
+
+                        <h3>
+                            不可重複 Cash Out
+                        </h3>
+
+                        <p>
+                            每筆下注只能成功 Cash Out 一次。完成後 Cash Out 按鈕會鎖定，不能再次領取返回金額。
+                        </p>
+
+                    </article>
+
+                </div>
+
+            </section>
+
+
+            <!-- =================================================
+                 AUTO CASHOUT
+            ================================================== -->
+            <section
+                class="rules-section"
+                aria-labelledby="autoCashoutTitle"
+            >
+
+                <div class="rules-section-heading">
+
+                    <img
+                        src="./assets/icons/auto.svg"
+                        alt=""
+                        aria-hidden="true"
+                    >
+
+                    <div>
+                        <span>
+                            AUTO MODE
+                        </span>
+
+                        <h2 id="autoCashoutTitle">
+                            Auto Cash Out
+                        </h2>
+                    </div>
+
+                </div>
+
+
+                <div class="rules-highlight-box">
+
+                    <strong>
+                        例如設定 2.00×
+                    </strong>
+
+                    <p>
+                        只要本局 Crash Point 高於 2.00×，系統在倍率抵達目標時會自動以 2.00× 完成 Cash Out。
+                    </p>
+
+                </div>
+
+
+                <div class="rules-content-grid">
+
+                    <article class="rules-info-card">
+
+                        <h3>
+                            設定範圍
+                        </h3>
+
+                        <p>
+                            Auto Cash Out 可設定在 1.01×～999.99× 之間。設定完成後，目標倍率會保存在本局狀態中。
+                        </p>
+
+                    </article>
+
+
+                    <article class="rules-info-card">
+
+                        <h3>
+                            鎖定時間
+                        </h3>
+
+                        <p>
+                            Auto Cash Out 僅能在飛行開始前調整。正式進入 FLYING 後，設定會鎖定直到本局結束。
+                        </p>
+
+                    </article>
+
+
+                    <article class="rules-info-card">
+
+                        <h3>
+                            跨幀判定
+                        </h3>
+
+                        <p>
+                            即使畫面某一幀從 1.99× 跳至 2.01×，只要目標設定為 2.00×，系統仍會按照 2.00× 結算。
+                        </p>
+
+                    </article>
+
+
+                    <article class="rules-info-card">
+
+                        <h3>
+                            Crash 邊界
+                        </h3>
+
+                        <p>
+                            Auto Cash Out 必須嚴格早於墜毀倍率。若 Auto 目標與 Crash Point 完全相同，仍然視為失敗。
+                        </p>
+
+                    </article>
+
+                </div>
+
+            </section>
+
+
+            <!-- =================================================
+                 CRASH RULES
+            ================================================== -->
+            <section
+                class="rules-section"
+                aria-labelledby="crashRulesTitle"
+            >
+
+                <div class="rules-section-heading">
+
+                    <img
+                        src="./assets/icons/crash.svg"
+                        alt=""
+                        aria-hidden="true"
+                    >
+
+                    <div>
+                        <span>
+                            CRASH POINT
+                        </span>
+
+                        <h2 id="crashRulesTitle">
+                            墜毀判定
+                        </h2>
+                    </div>
+
+                </div>
+
+
+                <div class="rules-crash-example-grid">
+
+                    <article class="rules-crash-example is-success">
+
+                        <span>
+                            CRASH
+                        </span>
+
+                        <strong>
+                            2.00×
+                        </strong>
+
+                        <p>
+                            Cash Out 1.99×
+                        </p>
+
+                        <b>
+                            WIN
+                        </b>
+
+                    </article>
+
+
+                    <article class="rules-crash-example is-fail">
+
+                        <span>
+                            CRASH
+                        </span>
+
+                        <strong>
+                            2.00×
+                        </strong>
+
+                        <p>
+                            Cash Out 2.00×
+                        </p>
+
+                        <b>
+                            LOSS
+                        </b>
+
+                    </article>
+
+
+                    <article class="rules-crash-example is-fail">
+
+                        <span>
+                            CRASH
+                        </span>
+
+                        <strong>
+                            2.00×
+                        </strong>
+
+                        <p>
+                            Cash Out 2.01×
+                        </p>
+
+                        <b>
+                            LOSS
+                        </b>
+
+                    </article>
+
+                </div>
+
+
+                <div class="rules-notice">
+
+                    <img
+                        src="./assets/icons/info.svg"
+                        alt=""
+                        aria-hidden="true"
+                    >
+
+                    <p>
+                        墜毀倍率本身就是死亡線，因此 Cash Out 條件為「Cash Out 倍率小於 Crash Point」，不是小於或等於。
+                    </p>
+
+                </div>
+
+            </section>
+
+
+            <!-- =================================================
+                 LOGIN REWARDS
+            ================================================== -->
+            <section
+                class="rules-section"
+                aria-labelledby="loginRulesTitle"
+            >
+
+                <div class="rules-section-heading">
+
+                    <img
+                        src="./assets/icons/user.svg"
+                        alt=""
+                        aria-hidden="true"
+                    >
+
+                    <div>
+                        <span>
+                            LOGIN REWARDS
+                        </span>
+
+                        <h2 id="loginRulesTitle">
+                            登入獎勵
+                        </h2>
+                    </div>
+
+                </div>
+
+
+                <div class="login-reward-grid">
+
+                    <article class="login-reward-card is-first">
+
+                        <span>
+                            FIRST LOGIN
+                        </span>
+
+                        <strong>
+                            +10,000
+                        </strong>
+
+                        <p>
+                            玩家首次建立本地資料時取得一次性首登獎勵。
+                        </p>
+
+                    </article>
+
+
+                    <article class="login-reward-card">
+
+                        <span>
+                            DAILY
+                        </span>
+
+                        <strong>
+                            +1,000
+                        </strong>
+
+                        <p>
+                            每個新的有效登入日可取得每日登入獎勵。
+                        </p>
+
+                    </article>
+
+
+                    <article class="login-reward-card is-seven">
+
+                        <span>
+                            DAY 7 BONUS
+                        </span>
+
+                        <strong>
+                            +7,777
+                        </strong>
+
+                        <p>
+                            連續登入週期第 7 天，在每日 1,000 之外再額外取得 7,777。
+                        </p>
+
+                    </article>
+
+                </div>
+
+
+                <div class="rules-login-example">
+
+                    <div>
+                        <span>
+                            首次登入 Day 1
+                        </span>
+
+                        <strong>
+                            10,000 + 1,000 = 11,000
+                        </strong>
+                    </div>
+
+                    <div>
+                        <span>
+                            Day 7
+                        </span>
+
+                        <strong>
+                            1,000 + 7,777 = 8,777
+                        </strong>
+                    </div>
+
+                    <div>
+                        <span>
+                            Day 8
+                        </span>
+
+                        <strong>
+                            七日獎勵週期回到 Day 1
+                        </strong>
+                    </div>
+
+                </div>
+
+
+                <p class="rules-footnote">
+                    若中斷連續登入，七日獎勵週期會重新從 Day 1 開始。同一個本地日曆日重新開啟遊戲不會重複發放登入獎勵。
+                </p>
+
+            </section>
+
+
+            <!-- =================================================
+                 RESULTS / HISTORY
+            ================================================== -->
+            <section
+                class="rules-section"
+                aria-labelledby="historyRulesTitle"
+            >
+
+                <div class="rules-section-heading">
+
+                    <img
+                        src="./assets/icons/history.svg"
+                        alt=""
+                        aria-hidden="true"
+                    >
+
+                    <div>
+                        <span>
+                            RECORDS
+                        </span>
+
+                        <h2 id="historyRulesTitle">
+                            歷史與統計
+                        </h2>
+                    </div>
+
+                </div>
+
+
+                <div class="rules-content-grid">
+
+                    <article class="rules-info-card">
+
+                        <h3>
+                            History
+                        </h3>
+
+                        <p>
+                            每局 Settlement 完成後，系統會保存墜毀倍率、下注金額、Cash Out、返回金額、淨損益與時間資料。
+                        </p>
+
+                    </article>
+
+
+                    <article class="rules-info-card">
+
+                        <h3>
+                            最近 10 期
+                        </h3>
+
+                        <p>
+                            Game 與 History 頁皆可查看最近 10 局 Crash 結果，最新一局排列在最前方。
+                        </p>
+
+                    </article>
+
+
+                    <article class="rules-info-card">
+
+                        <h3>
+                            有效投注
+                        </h3>
+
+                        <p>
+                            Statistics 的 totalBets 只計算真正承擔風險並產生 WIN 或 LOSS 的下注。REFUND 與 NO_BET 不計入有效投注。
+                        </p>
+
+                    </article>
+
+
+                    <article class="rules-info-card">
+
+                        <h3>
+                            淨損益
+                        </h3>
+
+                        <p>
+                            玩家淨損益依所有有效投注的成功收益與墜毀損失計算。取消下注不會影響損益。
+                        </p>
+
+                    </article>
+
+                </div>
+
+            </section>
+
+
+            <!-- =================================================
+                 LOCAL DATA
+            ================================================== -->
+            <section
+                class="rules-section"
+                aria-labelledby="localDataTitle"
+            >
+
+                <div class="rules-section-heading">
+
+                    <img
+                        src="./assets/icons/info.svg"
+                        alt=""
+                        aria-hidden="true"
+                    >
+
+                    <div>
+                        <span>
+                            LOCAL GAME
+                        </span>
+
+                        <h2 id="localDataTitle">
+                            本地資料說明
+                        </h2>
+                    </div>
+
+                </div>
+
+
+                <div class="rules-notice is-neutral">
+
+                    <img
+                        src="./assets/icons/info.svg"
+                        alt=""
+                        aria-hidden="true"
+                    >
+
+                    <div>
+                        <p>
+                            CG Flight 為純前端本地遊戲。Wallet、登入紀錄、Settings、Statistics 與 History 均儲存在目前瀏覽器的 Local Storage。
+                        </p>
+
+                        <p>
+                            清除網站資料、使用不同瀏覽器或不同裝置時，資料可能不會同步或可能被重置。本遊戲僅使用虛擬代幣，不涉及真實金錢下注。
+                        </p>
+                    </div>
+
+                </div>
+
+            </section>
+
+        </main>
+
+
+        <!-- =====================================================
+             FOOTER
+        ====================================================== -->
+        <footer class="rules-footer">
+
+            <span>
+                CG FLIGHT
+            </span>
+
+            <span class="rules-footer-divider">
+                •
+            </span>
+
+            <span>
+                Virtual Coins Only
+            </span>
+
+            <span class="rules-footer-divider">
+                •
+            </span>
+
+            <a href="./history.html">
+                History
+            </a>
+
+            <span class="rules-footer-divider">
+                •
+            </span>
+
+            <a href="./game.html">
+                Flight
+            </a>
+
+        </footer>
+
+    </div>
+
+
+
+    <!-- =========================================================
+         SETTINGS MODAL
+    ========================================================== -->
+    <div
+        id="settingsModal"
+        class="modal-overlay is-hidden"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="settingsModalTitle"
+        hidden
+    >
+
+        <div class="modal settings-modal">
+
+            <header class="settings-modal-header">
+
+                <h2 id="settingsModalTitle">
+                    Settings
+                </h2>
+
+
+                <button
+                    id="closeSettingsButton"
+                    class="modal-close-button"
+                    type="button"
+                    aria-label="關閉設定"
+                >
+                    ×
+                </button>
+
+            </header>
+
+
+            <div class="settings-modal-body">
+
+                <div class="settings-row">
+
+                    <div class="settings-row-label">
+                        Sound Effects
+                    </div>
+
+
+                    <button
+                        id="settingsSoundToggle"
+                        class="settings-toggle-button"
+                        type="button"
+                        aria-pressed="true"
+                    >
+                        ON
+                    </button>
+
+                </div>
+
+
+                <div class="settings-row">
+
+                    <div class="settings-row-label">
+                        Background Music
+                    </div>
+
+
+                    <button
+                        id="settingsMusicToggle"
+                        class="settings-toggle-button"
+                        type="button"
+                        aria-pressed="true"
+                    >
+                        ON
+                    </button>
+
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+
+
+
+    <!-- =========================================================
+         PAGE SCRIPT
+    ========================================================== -->
+    <script
+        type="module"
+        src="./js/pages/rules.js"
+    ></script>
+
+</body>
+</html>
