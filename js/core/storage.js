@@ -4,12 +4,14 @@
 
    Local storage data layer.
 
+   Schema version: 2
+
    Responsibilities:
    - Create default local player data
    - Read local player data
    - Write local player data
    - Validate / repair stored data
-   - Handle schema version
+   - Handle schema migration
    - Provide safe update helpers
    - Reset local game data
 
@@ -34,14 +36,13 @@
 
 const STORAGE_KEY = "cgFlightData";
 
-const CURRENT_SCHEMA_VERSION = 1;
+const CURRENT_SCHEMA_VERSION = 2;
 
 
 /* =========================================================
    DEFAULT DATA FACTORY
 
    Always return a NEW object.
-   Never reuse the same object reference.
 ========================================================= */
 
 function createDefaultData() {
@@ -55,7 +56,11 @@ function createDefaultData() {
         },
 
         wallet: {
-            balance: 0
+            balance: 0,
+
+            firstLoginBonusClaimed: false,
+
+            transactions: []
         },
 
         login: {
@@ -148,11 +153,9 @@ function sanitizeNonNegativeNumber(
     value,
     fallback = 0
 ) {
-    if (!isNonNegativeNumber(value)) {
-        return fallback;
-    }
-
-    return value;
+    return isNonNegativeNumber(value)
+        ? value
+        : fallback;
 }
 
 
@@ -160,11 +163,9 @@ function sanitizeNonNegativeInteger(
     value,
     fallback = 0
 ) {
-    if (!isNonNegativeInteger(value)) {
-        return fallback;
-    }
-
-    return value;
+    return isNonNegativeInteger(value)
+        ? value
+        : fallback;
 }
 
 
@@ -172,11 +173,9 @@ function sanitizeBoolean(
     value,
     fallback = false
 ) {
-    if (!isBoolean(value)) {
-        return fallback;
-    }
-
-    return value;
+    return isBoolean(value)
+        ? value
+        : fallback;
 }
 
 
@@ -184,36 +183,144 @@ function sanitizeNullableString(
     value,
     fallback = null
 ) {
-    if (!isNullableString(value)) {
-        return fallback;
-    }
-
-    return value;
+    return isNullableString(value)
+        ? value
+        : fallback;
 }
 
 
 /* =========================================================
-   DATA SANITIZATION
+   CLONE
+========================================================= */
 
-   This protects the game from:
-   - Broken JSON
-   - Missing properties
-   - Old data structures
-   - Invalid values
-   - Manual localStorage edits
+function cloneData(value) {
+    if (
+        typeof structuredClone === "function"
+    ) {
+        return structuredClone(value);
+    }
 
-   It does NOT try to prevent cheating.
-   Pure frontend storage cannot provide authoritative security.
+    return JSON.parse(
+        JSON.stringify(value)
+    );
+}
+
+
+/* =========================================================
+   TRANSACTION SANITIZER
+========================================================= */
+
+function sanitizeWalletTransaction(
+    transaction
+) {
+    if (!isPlainObject(transaction)) {
+        return null;
+    }
+
+    const id =
+        typeof transaction.id === "string"
+            ? transaction.id
+            : null;
+
+    const type =
+        typeof transaction.type === "string"
+            ? transaction.type
+            : null;
+
+    const direction =
+        transaction.direction === "CREDIT" ||
+        transaction.direction === "DEBIT"
+            ? transaction.direction
+            : null;
+
+    const amount =
+        sanitizeNonNegativeNumber(
+            transaction.amount,
+            -1
+        );
+
+    const balanceBefore =
+        sanitizeNonNegativeNumber(
+            transaction.balanceBefore,
+            -1
+        );
+
+    const balanceAfter =
+        sanitizeNonNegativeNumber(
+            transaction.balanceAfter,
+            -1
+        );
+
+    const createdAt =
+        typeof transaction.createdAt === "string"
+            ? transaction.createdAt
+            : null;
+
+    if (
+        id === null ||
+        type === null ||
+        direction === null ||
+        amount <= 0 ||
+        balanceBefore < 0 ||
+        balanceAfter < 0 ||
+        createdAt === null
+    ) {
+        return null;
+    }
+
+    return {
+        id,
+        type,
+        direction,
+        amount,
+        balanceBefore,
+        balanceAfter,
+        createdAt,
+
+        metadata:
+            transaction.metadata === undefined
+                ? null
+                : cloneData(
+                    transaction.metadata
+                )
+    };
+}
+
+
+/* =========================================================
+   HISTORY ENTRY SANITIZER
+
+   History format will become stricter later when
+   history.js is implemented.
+
+   For now:
+   - only plain objects are accepted
+   - objects are cloned
+========================================================= */
+
+function sanitizeHistoryEntry(entry) {
+    if (!isPlainObject(entry)) {
+        return null;
+    }
+
+    return cloneData(entry);
+}
+
+
+/* =========================================================
+   MAIN SANITIZATION
 ========================================================= */
 
 function sanitizeData(rawData) {
-    const defaults = createDefaultData();
+    const defaults =
+        createDefaultData();
 
     if (!isPlainObject(rawData)) {
         return defaults;
     }
 
-    const sanitized = createDefaultData();
+    const sanitized =
+        createDefaultData();
 
 
     /* -----------------------------------------------------
@@ -267,6 +374,23 @@ function sanitizeData(rawData) {
             defaults.wallet.balance
         );
 
+    sanitized.wallet.firstLoginBonusClaimed =
+        sanitizeBoolean(
+            rawWallet.firstLoginBonusClaimed,
+            defaults.wallet.firstLoginBonusClaimed
+        );
+
+    sanitized.wallet.transactions =
+        Array.isArray(
+            rawWallet.transactions
+        )
+            ? rawWallet.transactions
+                .map(
+                    sanitizeWalletTransaction
+                )
+                .filter(Boolean)
+            : [];
+
 
     /* -----------------------------------------------------
        Login
@@ -295,18 +419,9 @@ function sanitizeData(rawData) {
             defaults.login.cycleDay
         );
 
-
-    /*
-     Login cycle only supports 0–7.
-
-     0:
-     No login cycle has been initialized yet.
-
-     1–7:
-     Current seven-day cycle position.
-    */
-
-    if (sanitized.login.cycleDay > 7) {
+    if (
+        sanitized.login.cycleDay > 7
+    ) {
         sanitized.login.cycleDay = 0;
     }
 
@@ -415,33 +530,15 @@ function sanitizeData(rawData) {
 
     sanitized.history =
         Array.isArray(rawData.history)
-            ? rawData.history.filter(
-                (entry) => isPlainObject(entry)
-            )
+            ? rawData.history
+                .map(
+                    sanitizeHistoryEntry
+                )
+                .filter(Boolean)
             : [];
 
 
     return sanitized;
-}
-
-
-/* =========================================================
-   JSON CLONE
-
-   Prevent external modules from modifying the stored object
-   by reference.
-========================================================= */
-
-function cloneData(value) {
-    if (
-        typeof structuredClone === "function"
-    ) {
-        return structuredClone(value);
-    }
-
-    return JSON.parse(
-        JSON.stringify(value)
-    );
 }
 
 
@@ -465,7 +562,9 @@ function readRawStorage() {
 }
 
 
-function writeRawStorage(serializedData) {
+function writeRawStorage(
+    serializedData
+) {
     try {
         localStorage.setItem(
             STORAGE_KEY,
@@ -485,54 +584,137 @@ function writeRawStorage(serializedData) {
 
 
 /* =========================================================
-   LOAD DATA
+   MIGRATION: V1 -> V2
+
+   V1 wallet:
+   {
+       balance
+   }
+
+   V2 wallet:
+   {
+       balance,
+       firstLoginBonusClaimed,
+       transactions
+   }
 ========================================================= */
 
-function loadData() {
-    const raw =
-        readRawStorage();
+function migrateV1ToV2(data) {
+    const migrated =
+        cloneData(data);
 
-    /*
-     No saved data exists yet.
+    if (
+        !isPlainObject(
+            migrated.wallet
+        )
+    ) {
+        migrated.wallet = {};
+    }
 
-     Return default data but DO NOT automatically
-     initialize the player here.
+    if (
+        typeof
+        migrated.wallet
+            .firstLoginBonusClaimed
+        !== "boolean"
+    ) {
+        /*
+         Important migration behavior:
 
-     First-login logic belongs elsewhere.
-    */
+         Existing V1 players may already have received
+         the original first-login bonus before this flag
+         existed.
 
-    if (raw === null) {
+         If player.initialized === true, treat the bonus
+         as already claimed to prevent duplicate +10,000.
+        */
+
+        migrated.wallet
+            .firstLoginBonusClaimed =
+            Boolean(
+                migrated.player &&
+                migrated.player.initialized
+            );
+    }
+
+    if (
+        !Array.isArray(
+            migrated.wallet.transactions
+        )
+    ) {
+        migrated.wallet.transactions = [];
+    }
+
+    migrated.schemaVersion = 2;
+
+    return migrated;
+}
+
+
+/* =========================================================
+   MIGRATION PIPELINE
+========================================================= */
+
+function migrateAndSanitize(
+    rawData
+) {
+    if (!isPlainObject(rawData)) {
         return createDefaultData();
     }
 
-    try {
-        const parsed =
-            JSON.parse(raw);
+    let workingData =
+        cloneData(rawData);
 
-        const sanitized =
-            migrateAndSanitize(parsed);
+    let version =
+        Number.isInteger(
+            workingData.schemaVersion
+        )
+            ? workingData.schemaVersion
+            : 0;
 
-        /*
-         If stored data required repairing,
-         save the sanitized version back.
-        */
 
-        saveData(sanitized);
+    /*
+     Legacy / version 0 data.
 
-        return cloneData(sanitized);
-    } catch (error) {
-        console.warn(
-            "[CG Flight] Stored data is invalid. Resetting structure.",
-            error
-        );
+     Treat as V1-compatible first.
+    */
 
-        const fallback =
-            createDefaultData();
-
-        saveData(fallback);
-
-        return cloneData(fallback);
+    if (version < 1) {
+        workingData.schemaVersion = 1;
+        version = 1;
     }
+
+
+    /*
+     V1 -> V2
+    */
+
+    if (version < 2) {
+        workingData =
+            migrateV1ToV2(
+                workingData
+            );
+
+        version = 2;
+    }
+
+
+    /*
+     Future migrations:
+
+     if (version < 3) {
+         workingData =
+             migrateV2ToV3(
+                 workingData
+             );
+
+         version = 3;
+     }
+    */
+
+
+    return sanitizeData(
+        workingData
+    );
 }
 
 
@@ -549,13 +731,19 @@ function saveData(data) {
 
     try {
         const serialized =
-            JSON.stringify(sanitized);
+            JSON.stringify(
+                sanitized
+            );
 
         const success =
-            writeRawStorage(serialized);
+            writeRawStorage(
+                serialized
+            );
 
         return success
-            ? cloneData(sanitized)
+            ? cloneData(
+                sanitized
+            )
             : null;
     } catch (error) {
         console.error(
@@ -569,79 +757,75 @@ function saveData(data) {
 
 
 /* =========================================================
-   MIGRATION
-
-   Future versions can be migrated here.
-
-   Example:
-   schemaVersion 1 -> schemaVersion 2
-
-   For now, version 1 is the first schema.
+   LOAD DATA
 ========================================================= */
 
-function migrateAndSanitize(rawData) {
-    if (!isPlainObject(rawData)) {
+function loadData() {
+    const raw =
+        readRawStorage();
+
+    /*
+     No local data yet.
+
+     Return defaults only.
+     Player initialization remains separate.
+    */
+
+    if (raw === null) {
         return createDefaultData();
     }
 
-    let workingData =
-        cloneData(rawData);
+    try {
+        const parsed =
+            JSON.parse(raw);
 
-    const storedVersion =
-        Number.isInteger(
-            workingData.schemaVersion
-        )
-            ? workingData.schemaVersion
-            : 0;
+        const migrated =
+            migrateAndSanitize(
+                parsed
+            );
 
+        /*
+         Save migrated / repaired structure back.
+        */
 
-    /*
-     Version 0 represents data created before
-     schemaVersion existed.
+        const saved =
+            saveData(migrated);
 
-     Currently sanitizeData is enough to upgrade it.
-    */
+        return cloneData(
+            saved ?? migrated
+        );
+    } catch (error) {
+        console.warn(
+            "[CG Flight] Stored data is invalid. Restoring default structure.",
+            error
+        );
 
-    if (storedVersion < 1) {
-        workingData.schemaVersion = 1;
+        const fallback =
+            createDefaultData();
+
+        const saved =
+            saveData(fallback);
+
+        return cloneData(
+            saved ?? fallback
+        );
     }
+}
 
 
-    /*
-     Future example:
+/* =========================================================
+   CHECK STORED DATA
+========================================================= */
 
-     if (storedVersion < 2) {
-         workingData = migrateV1ToV2(workingData);
-     }
-    */
-
-
-    /*
-     If data comes from a newer game version,
-     we still sanitize the fields we currently know.
-
-     This avoids hard crashes.
-    */
-
-    return sanitizeData(
-        workingData
+function hasStoredData() {
+    return (
+        readRawStorage() !== null
     );
 }
 
 
 /* =========================================================
-   CHECK SAVED DATA
-========================================================= */
-
-function hasStoredData() {
-    return readRawStorage() !== null;
-}
-
-
-/* =========================================================
    GET DATA
-
-   Alias intended for other modules.
 ========================================================= */
 
 function getData() {
@@ -656,17 +840,22 @@ function getData() {
 
    updateData((data) => {
        data.wallet.balance += 1000;
+   });
+
+   Or:
+
+   updateData((data) => {
+       data.settings.musicEnabled = false;
        return data;
    });
 
-   The callback receives a cloned working copy.
-
-   Returning undefined is also allowed because the mutated
-   working copy will be saved automatically.
+   Returning undefined saves the mutated working copy.
 ========================================================= */
 
 function updateData(updater) {
-    if (typeof updater !== "function") {
+    if (
+        typeof updater !== "function"
+    ) {
         throw new TypeError(
             "[CG Flight] updateData requires a function."
         );
@@ -678,11 +867,13 @@ function updateData(updater) {
     const workingCopy =
         cloneData(currentData);
 
-    let result;
+    let updaterResult;
 
     try {
-        result =
-            updater(workingCopy);
+        updaterResult =
+            updater(
+                workingCopy
+            );
     } catch (error) {
         console.error(
             "[CG Flight] Data update callback failed:",
@@ -693,9 +884,9 @@ function updateData(updater) {
     }
 
     const nextData =
-        result === undefined
+        updaterResult === undefined
             ? workingCopy
-            : result;
+            : updaterResult;
 
     if (!isPlainObject(nextData)) {
         throw new TypeError(
@@ -703,26 +894,31 @@ function updateData(updater) {
         );
     }
 
-    return saveData(nextData);
+    return saveData(
+        nextData
+    );
 }
 
 
 /* =========================================================
-   INITIALIZE PLAYER STORAGE
+   PLAYER INITIALIZATION
 
-   IMPORTANT:
-   This function only marks the player data as initialized.
+   Does NOT award coins.
 
-   It DOES NOT give 10,000 coins.
-
-   wallet.js / login logic will handle reward transactions.
+   Returns:
+   {
+       created,
+       data
+   }
 ========================================================= */
 
 function initializePlayerData() {
     const data =
         loadData();
 
-    if (data.player.initialized) {
+    if (
+        data.player.initialized
+    ) {
         return {
             created: false,
             data
@@ -732,15 +928,19 @@ function initializePlayerData() {
     const now =
         new Date().toISOString();
 
-    data.player.initialized = true;
-    data.player.createdAt = now;
+    data.player.initialized =
+        true;
+
+    data.player.createdAt =
+        now;
 
     const saved =
         saveData(data);
 
     return {
         created: true,
-        data: saved ?? data
+        data:
+            saved ?? data
     };
 }
 
@@ -748,12 +948,7 @@ function initializePlayerData() {
 /* =========================================================
    RESET DATA
 
-   Completely removes CG Flight player data.
-
-   Useful during development or if a future reset feature
-   is added to Settings.
-
-   This does NOT reload the page automatically.
+   Completely removes CG Flight data.
 ========================================================= */
 
 function resetData() {
@@ -775,63 +970,143 @@ function resetData() {
 
 
 /* =========================================================
-   REPLACE WITH DEFAULT DATA
+   RESTORE DEFAULT DATA
 
-   Unlike resetData(), this leaves a valid default object
-   inside localStorage.
+   Leaves a valid default object in localStorage.
 ========================================================= */
 
 function restoreDefaultData() {
-    const defaults =
-        createDefaultData();
-
-    return saveData(defaults);
+    return saveData(
+        createDefaultData()
+    );
 }
 
 
 /* =========================================================
-   STORAGE INFORMATION
+   STORAGE INFO
 ========================================================= */
 
 function getStorageInfo() {
     const raw =
         readRawStorage();
 
-    const exists =
-        raw !== null;
-
     return {
-        key: STORAGE_KEY,
+        key:
+            STORAGE_KEY,
+
         schemaVersion:
             CURRENT_SCHEMA_VERSION,
-        exists,
+
+        exists:
+            raw !== null,
+
         bytes:
             raw === null
                 ? 0
-                : new Blob([raw]).size
+                : getByteSize(raw)
     };
 }
 
 
 /* =========================================================
-   EXTERNAL STORAGE CHANGES
+   BYTE SIZE
+========================================================= */
 
-   This event fires when another tab changes localStorage.
+function getByteSize(value) {
+    if (
+        typeof TextEncoder !==
+        "undefined"
+    ) {
+        return (
+            new TextEncoder()
+                .encode(value)
+                .length
+        );
+    }
 
-   Same-tab writes do not trigger the native storage event.
+    try {
+        return (
+            new Blob([value])
+                .size
+        );
+    } catch {
+        return value.length;
+    }
+}
 
-   Other modules may subscribe through
-   subscribeToStorageChanges().
+
+/* =========================================================
+   VALIDATE STORED DATA
+========================================================= */
+
+function validateStoredData() {
+    const raw =
+        readRawStorage();
+
+    if (raw === null) {
+        return true;
+    }
+
+    try {
+        const parsed =
+            JSON.parse(raw);
+
+        migrateAndSanitize(
+            parsed
+        );
+
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+
+/* =========================================================
+   EXTERNAL STORAGE CHANGE LISTENERS
 ========================================================= */
 
 const storageListeners =
     new Set();
 
 
+function subscribeToStorageChanges(
+    listener
+) {
+    if (
+        typeof listener !==
+        "function"
+    ) {
+        throw new TypeError(
+            "[CG Flight] Storage listener must be a function."
+        );
+    }
+
+    storageListeners.add(
+        listener
+    );
+
+    return function unsubscribe() {
+        storageListeners.delete(
+            listener
+        );
+    };
+}
+
+
+/* =========================================================
+   NATIVE STORAGE EVENT
+
+   Fires only when another tab/window modifies
+   the same localStorage key.
+========================================================= */
+
 function handleStorageEvent(event) {
     if (
-        event.storageArea !== localStorage ||
-        event.key !== STORAGE_KEY
+        event.storageArea !==
+            localStorage ||
+        event.key !==
+            STORAGE_KEY
     ) {
         return;
     }
@@ -857,55 +1132,10 @@ function handleStorageEvent(event) {
 }
 
 
-function subscribeToStorageChanges(listener) {
-    if (typeof listener !== "function") {
-        throw new TypeError(
-            "[CG Flight] Storage listener must be a function."
-        );
-    }
-
-    storageListeners.add(listener);
-
-    return function unsubscribe() {
-        storageListeners.delete(listener);
-    };
-}
-
-
 window.addEventListener(
     "storage",
     handleStorageEvent
 );
-
-
-/* =========================================================
-   DEBUG VALIDATION
-
-   Useful during development.
-
-   Returns true if the stored data can be parsed and
-   successfully sanitized.
-========================================================= */
-
-function validateStoredData() {
-    const raw =
-        readRawStorage();
-
-    if (raw === null) {
-        return true;
-    }
-
-    try {
-        const parsed =
-            JSON.parse(raw);
-
-        sanitizeData(parsed);
-
-        return true;
-    } catch {
-        return false;
-    }
-}
 
 
 /* =========================================================
