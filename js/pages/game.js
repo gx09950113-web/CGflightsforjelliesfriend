@@ -6,16 +6,18 @@
 
    Responsibilities:
    - Initialize player/login state
-   - Initialize round
+   - Initialize each round
    - Manage betting window
    - Bind DOM controls
    - Render wallet
    - Render recent 10 results
    - Render game phases
    - Render multiplier / flight visuals
-   - Handle betting
-   - Handle Auto Cash Out
-   - Handle manual Cash Out
+   - Coordinate betting UI
+   - Coordinate Auto Cash Out UI
+   - Coordinate manual Cash Out UI
+   - Trigger normal settlement after Crash
+   - Handle abnormal flight refunds
    - Render settlement result
    - Manage settings / audio UI
    - Handle leave confirmation
@@ -23,7 +25,14 @@
 
    IMPORTANT:
    This file coordinates modules.
-   It does NOT reimplement game rules.
+
+   It does NOT:
+   - Generate Crash Point
+   - Calculate multiplier growth
+   - Debit / credit Wallet directly
+   - Execute Auto Cash Out logic
+   - Write History directly
+   - Write Statistics directly
 ========================================================= */
 
 
@@ -36,9 +45,11 @@ import {
     formatCoins
 } from "../core/wallet.js";
 
+
 import {
     processLogin
 } from "../core/login.js";
+
 
 import {
     getSettings,
@@ -47,12 +58,16 @@ import {
     subscribeToSettings
 } from "../core/settings.js";
 
+
 import {
     preloadAudio,
     playBgm,
+    pauseBgm,
     playClick,
-    playLoginReward
+    playLoginReward,
+    playWin
 } from "../core/audio.js";
+
 
 import {
     showElement,
@@ -76,36 +91,52 @@ import {
 
     createRound,
     getState,
-    getPhase,
     subscribeToState
 } from "../game/state.js";
+
 
 import {
     placeBet,
     cancelBet,
-    previewBet,
-    getBettingStatus
+    previewBet
 } from "../game/betting.js";
+
 
 import {
     startCountdown,
     resetFlightRuntime,
-    subscribeToFlight
+    subscribeToFlight,
+    FLIGHT_EVENT_TYPES
 } from "../game/flight.js";
+
 
 import {
     cashout,
+
     configureAutoCashout,
     disableAutoCashout,
+
     previewCashout,
     getAutoCashoutStatus,
-    resetCashoutRuntime
+
+    resetCashoutRuntime,
+
+    subscribeToCashout,
+    CASHOUT_EVENT_TYPES
 } from "../game/cashout.js";
 
+
 import {
+    settleRound,
+    refundRound,
+    settleNoBetRound,
+
     resetSettlementRuntime,
-    subscribeToSettlement
+
+    subscribeToSettlement,
+    SETTLEMENT_EVENT_TYPES
 } from "../game/settlement.js";
+
 
 import {
     getRecentResults,
@@ -120,20 +151,25 @@ import {
 const PAGE_CONFIG = Object.freeze({
 
     /*
-     Time available for placing a new bet before the
-     three-second flight countdown begins.
+     Time available to place a bet before the flight
+     countdown starts.
     */
-    BETTING_WINDOW_MS: 5000,
+    BETTING_WINDOW_MS:
+        5000,
+
 
     /*
-     Bet +/- button step.
+     Bet +/- adjustment.
     */
-    BET_STEP: 100,
+    BET_STEP:
+        100,
+
 
     /*
-     Delay used only for temporary Cash Out visual effect.
+     Temporary Cash Out visual duration.
     */
-    CASHOUT_EFFECT_MS: 1800
+    CASHOUT_EFFECT_MS:
+        1800
 });
 
 
@@ -540,7 +576,7 @@ const elements = {
 
 
     /* -----------------------------------------------------
-       Leave modal
+       Leave confirmation
     ----------------------------------------------------- */
 
     leaveConfirmModal:
@@ -566,15 +602,23 @@ const elements = {
 
 const runtime = {
 
-    bettingTimerId: null,
+    bettingTimerId:
+        null,
 
-    bettingDeadline: null,
+    bettingDeadline:
+        null,
 
-    cashoutEffectTimerId: null,
+    cashoutEffectTimerId:
+        null,
 
-    roundStarting: false,
+    roundStarting:
+        false,
 
-    leavingConfirmed: false
+    settlementStarted:
+        false,
+
+    leavingConfirmed:
+        false
 };
 
 
@@ -588,10 +632,10 @@ function init() {
 
 
     /*
-     This also protects direct access to game.html.
+     Protect direct navigation to game.html.
 
      If the player never visited index.html first,
-     player initialization and login rewards still happen.
+     initialization and the daily login reward still work.
     */
 
     const loginResult =
@@ -602,6 +646,7 @@ function init() {
         loginResult.success &&
         loginResult.totalReward > 0
     ) {
+
         playLoginReward();
     }
 
@@ -610,25 +655,22 @@ function init() {
 
     bindModuleEvents();
 
+
     updateSettingsUI();
 
     renderWallet();
 
     renderRecentResults();
 
+
     resetVisualState();
 
     startNewRound();
 
 
-    /*
-     User interaction has now occurred after clicking through
-     from Lobby in the normal flow, so BGM will normally play.
-
-     If autoplay is blocked, audio.js handles the failure.
-    */
-
-    playBgm("game");
+    playBgm(
+        "game"
+    );
 }
 
 
@@ -660,6 +702,7 @@ function bindControls() {
         ?.addEventListener(
             "click",
             () => {
+
                 adjustBetAmount(
                     -PAGE_CONFIG.BET_STEP
                 );
@@ -671,6 +714,7 @@ function bindControls() {
         ?.addEventListener(
             "click",
             () => {
+
                 adjustBetAmount(
                     PAGE_CONFIG.BET_STEP
                 );
@@ -695,6 +739,7 @@ function bindControls() {
 
                         playClick();
 
+
                         const value =
                             Number(
                                 button.dataset
@@ -703,18 +748,27 @@ function bindControls() {
 
 
                         if (
-                            Number.isFinite(
+                            !Number.isFinite(
                                 value
                             )
                         ) {
+                            return;
+                        }
+
+
+                        if (
+                            elements
+                                .betAmountInput
+                        ) {
+
                             elements
                                 .betAmountInput
                                 .value =
                                 String(value);
-
-
-                            renderBetPreview();
                         }
+
+
+                        renderBetPreview();
                     }
                 );
             }
@@ -766,16 +820,23 @@ function bindControls() {
                         }
 
 
-                        elements
-                            .autoCashoutInput
-                            .value =
-                            value.toFixed(2);
+                        if (
+                            elements
+                                .autoCashoutInput
+                        ) {
+
+                            elements
+                                .autoCashoutInput
+                                .value =
+                                value.toFixed(2);
+                        }
 
 
                         if (
                             getAutoCashoutStatus()
                                 .enabled
                         ) {
+
                             configureCurrentAutoCashout();
                         }
                     }
@@ -785,7 +846,7 @@ function bindControls() {
 
 
     /* -----------------------------------------------------
-       Cash Out
+       Manual Cash Out
     ----------------------------------------------------- */
 
     elements.cashoutButton
@@ -796,7 +857,7 @@ function bindControls() {
 
 
     /* -----------------------------------------------------
-       Next round
+       Next Round
     ----------------------------------------------------- */
 
     elements.nextRoundButton
@@ -878,6 +939,7 @@ function bindControls() {
                     event.target ===
                     elements.settingsModal
                 ) {
+
                     closeSettings();
                 }
             }
@@ -885,7 +947,7 @@ function bindControls() {
 
 
     /* -----------------------------------------------------
-       Leave game
+       Leave Game
     ----------------------------------------------------- */
 
     elements.backLobbyButton
@@ -905,11 +967,7 @@ function bindControls() {
     elements.confirmLeaveButton
         ?.addEventListener(
             "click",
-            () => {
-
-                runtime.leavingConfirmed =
-                    true;
-            }
+            handleConfirmLeave
         );
 
 
@@ -930,15 +988,29 @@ function bindControls() {
 
 function bindModuleEvents() {
 
+    /* -----------------------------------------------------
+       State
+
+       IMPORTANT:
+       flight.js updates state every animation frame through
+       setCurrentMultiplier().
+
+       Do NOT redraw the entire control interface for those
+       high-frequency updates.
+    ----------------------------------------------------- */
+
     subscribeToState(
-        () => {
-            renderStateControls();
-        }
+        handleStateEvent
     );
 
 
     subscribeToFlight(
         handleFlightEvent
+    );
+
+
+    subscribeToCashout(
+        handleCashoutEvent
     );
 
 
@@ -949,29 +1021,79 @@ function bindModuleEvents() {
 
     subscribeToHistory(
         () => {
+
             renderRecentResults();
         }
     );
 
 
     subscribeToSettings(
-        () => {
+        ({
+            settings,
+            changedKeys
+        }) => {
 
             updateSettingsUI();
 
-            playBgm("game");
+
+            /*
+             audio.js handles Music OFF automatically.
+
+             If Music is turned ON again while remaining
+             on game.html, request Game BGM.
+            */
+
+            if (
+                changedKeys.includes(
+                    "musicEnabled"
+                ) &&
+                settings.musicEnabled
+            ) {
+
+                playBgm(
+                    "game"
+                );
+            }
         }
     );
 }
 
 
 /* =========================================================
-   NEW ROUND
+   STATE EVENT
+========================================================= */
+
+function handleStateEvent(
+    event
+) {
+
+    /*
+     Multiplier updates occur many times per second.
+
+     Those are rendered directly through Flight events.
+    */
+
+    if (
+        event.source ===
+        "setCurrentMultiplier"
+    ) {
+        return;
+    }
+
+
+    renderStateControls();
+}
+
+
+/* =========================================================
+   START NEW ROUND
 ========================================================= */
 
 function startNewRound() {
 
-    if (runtime.roundStarting) {
+    if (
+        runtime.roundStarting
+    ) {
         return;
     }
 
@@ -980,42 +1102,52 @@ function startNewRound() {
         true;
 
 
-    clearBettingTimer();
+    try {
 
-    clearCashoutEffectTimer();
+        clearBettingTimer();
 
-
-    resetFlightRuntime();
-
-    resetCashoutRuntime();
-
-    resetSettlementRuntime();
+        clearCashoutEffectTimer();
 
 
-    resetVisualState();
+        resetFlightRuntime();
+
+        resetCashoutRuntime();
+
+        resetSettlementRuntime();
 
 
-    const state =
-        createRound();
+        runtime.settlementStarted =
+            false;
 
 
-    setText(
-        elements.roundIdDisplay,
-        state.roundId ?? "—"
-    );
+        resetVisualState();
 
 
-    renderWallet();
-
-    renderStateControls();
-
-    renderBetPreview();
-
-    startBettingWindow();
+        const state =
+            createRound();
 
 
-    runtime.roundStarting =
-        false;
+        setText(
+            elements.roundIdDisplay,
+            state.roundId ??
+            "—"
+        );
+
+
+        renderWallet();
+
+        renderStateControls();
+
+        renderBetPreview();
+
+
+        startBettingWindow();
+
+    } finally {
+
+        runtime.roundStarting =
+            false;
+    }
 }
 
 
@@ -1061,7 +1193,9 @@ function startBettingWindow() {
                     startCountdown();
 
 
-                if (!result.success) {
+                if (
+                    !result.success
+                ) {
 
                     console.error(
                         "[CG Flight] Countdown start failed:",
@@ -1093,6 +1227,7 @@ function clearBettingTimer() {
         runtime.bettingTimerId !==
         null
     ) {
+
         window.clearTimeout(
             runtime.bettingTimerId
         );
@@ -1114,7 +1249,12 @@ function clearBettingTimer() {
 
 function handlePlaceBet() {
 
-    playClick();
+    /*
+     Do NOT play generic click here.
+
+     betting.js already plays bet.mp3 or
+     insufficient-balance.mp3.
+    */
 
 
     clearControlMessage(
@@ -1136,41 +1276,67 @@ function handlePlaceBet() {
         );
 
 
-    if (!result.success) {
+    if (
+        !result.success
+    ) {
 
-        if (
-            result.reason ===
-            "INSUFFICIENT_BALANCE"
+        switch (
+            result.reason
         ) {
-            setControlMessage(
-                elements.betMessage,
-                "代幣餘額不足。",
-                "error"
-            );
-        } else if (
-            result.reason ===
-            "BETTING_CLOSED"
-        ) {
-            setControlMessage(
-                elements.betMessage,
-                "本局下注已關閉。",
-                "warning"
-            );
-        } else if (
-            result.reason ===
-            "BET_ALREADY_EXISTS"
-        ) {
-            setControlMessage(
-                elements.betMessage,
-                "本局已經下注。",
-                "warning"
-            );
-        } else {
-            setControlMessage(
-                elements.betMessage,
-                "下注金額無效。",
-                "error"
-            );
+
+            case "INSUFFICIENT_BALANCE":
+
+                setControlMessage(
+                    elements.betMessage,
+                    "代幣餘額不足。",
+                    "error"
+                );
+
+                break;
+
+
+            case "BETTING_CLOSED":
+
+                setControlMessage(
+                    elements.betMessage,
+                    "本局下注已關閉。",
+                    "warning"
+                );
+
+                break;
+
+
+            case "BET_ALREADY_EXISTS":
+
+                setControlMessage(
+                    elements.betMessage,
+                    "本局已經下注。",
+                    "warning"
+                );
+
+                break;
+
+
+            case "NO_ACTIVE_ROUND":
+
+                setControlMessage(
+                    elements.betMessage,
+                    "目前沒有有效局次。",
+                    "error"
+                );
+
+                break;
+
+
+            default:
+
+                setControlMessage(
+                    elements.betMessage,
+                    "下注金額無效。",
+                    "error"
+                );
+
+                break;
         }
 
 
@@ -1182,7 +1348,9 @@ function handlePlaceBet() {
 
     setControlMessage(
         elements.betMessage,
-        `已下注 ${formatCoins(result.amount)} 代幣。`,
+        `已下注 ${formatCoins(
+            result.amount
+        )} 代幣。`,
         "success"
     );
 
@@ -1201,14 +1369,17 @@ function handlePlaceBet() {
 
 function handleCancelBet() {
 
-    playClick();
-
+    /*
+     betting.js owns bet-cancel.mp3.
+    */
 
     const result =
         cancelBet();
 
 
-    if (!result.success) {
+    if (
+        !result.success
+    ) {
 
         setControlMessage(
             elements.betMessage,
@@ -1223,7 +1394,9 @@ function handleCancelBet() {
 
     setControlMessage(
         elements.betMessage,
-        `已退回 ${formatCoins(result.refunded)} 代幣。`,
+        `已退回 ${formatCoins(
+            result.refunded
+        )} 代幣。`,
         "success"
     );
 
@@ -1247,11 +1420,18 @@ function adjustBetAmount(
     playClick();
 
 
+    if (
+        !elements.betAmountInput
+    ) {
+        return;
+    }
+
+
     const current =
         Number(
             elements
                 .betAmountInput
-                ?.value
+                .value
         ) || 0;
 
 
@@ -1335,7 +1515,9 @@ function handleAutoCashoutToggle() {
         getAutoCashoutStatus();
 
 
-    if (status.locked) {
+    if (
+        status.locked
+    ) {
 
         setControlMessage(
             elements.autoCashoutMessage,
@@ -1348,13 +1530,17 @@ function handleAutoCashoutToggle() {
     }
 
 
-    if (status.enabled) {
+    if (
+        status.enabled
+    ) {
 
         const result =
             disableAutoCashout();
 
 
-        if (!result.success) {
+        if (
+            !result.success
+        ) {
 
             setControlMessage(
                 elements.autoCashoutMessage,
@@ -1419,18 +1605,23 @@ function configureCurrentAutoCashout() {
         );
 
 
-    if (!result.success) {
+    if (
+        !result.success
+    ) {
 
         if (
             result.reason ===
             "AUTO_CASHOUT_LOCKED"
         ) {
+
             setControlMessage(
                 elements.autoCashoutMessage,
                 "飛行開始後不可修改 Auto Cash Out。",
                 "warning"
             );
+
         } else {
+
             setControlMessage(
                 elements.autoCashoutMessage,
                 "Auto Cash Out 倍率必須介於 1.01×～999.99×。",
@@ -1447,7 +1638,9 @@ function configureCurrentAutoCashout() {
 
     setControlMessage(
         elements.autoCashoutMessage,
-        `將於 ${result.targetMultiplier.toFixed(2)}× 自動 Cash Out。`,
+        `將於 ${Number(
+            result.targetMultiplier
+        ).toFixed(2)}× 自動 Cash Out。`,
         "success"
     );
 
@@ -1465,25 +1658,33 @@ function configureCurrentAutoCashout() {
 
 function handleManualCashout() {
 
-    playClick();
+    /*
+     Do NOT play generic click here.
 
+     cashout.js owns cashout.mp3.
+    */
 
     const result =
         cashout();
 
 
-    if (!result.success) {
+    if (
+        !result.success
+    ) {
 
         if (
             result.reason ===
             "CRASH_POINT_REACHED"
         ) {
+
             setControlMessage(
                 elements.cashoutMessage,
                 "已抵達墜毀倍率。",
                 "error"
             );
+
         } else {
+
             setControlMessage(
                 elements.cashoutMessage,
                 "目前無法 Cash Out。",
@@ -1496,9 +1697,81 @@ function handleManualCashout() {
     }
 
 
-    handleSuccessfulCashout(
+    /*
+     Manual success UI is normally rendered immediately.
+
+     The Cash Out event also fires, but renderCashoutEvent()
+     performs transaction-id deduplication.
+    */
+
+    renderSuccessfulCashout(
         result
     );
+}
+
+
+/* =========================================================
+   CASHOUT EVENT
+========================================================= */
+
+let lastRenderedCashoutTransactionId =
+    null;
+
+
+function handleCashoutEvent(
+    event
+) {
+
+    if (
+        ![
+            CASHOUT_EVENT_TYPES
+                .MANUAL_CASHOUT,
+
+            CASHOUT_EVENT_TYPES
+                .AUTO_CASHOUT
+        ].includes(
+            event.type
+        )
+    ) {
+        return;
+    }
+
+
+    if (
+        !event.transactionId
+    ) {
+        return;
+    }
+
+
+    if (
+        event.transactionId ===
+        lastRenderedCashoutTransactionId
+    ) {
+        return;
+    }
+
+
+    renderSuccessfulCashout({
+
+        automatic:
+            event.automatic,
+
+        multiplier:
+            event.multiplier,
+
+        returnedAmount:
+            event.returnedAmount,
+
+        amount:
+            event.returnedAmount,
+
+        profit:
+            event.profit,
+
+        transactionId:
+            event.transactionId
+    });
 }
 
 
@@ -1506,23 +1779,57 @@ function handleManualCashout() {
    SUCCESSFUL CASHOUT UI
 ========================================================= */
 
-function handleSuccessfulCashout(
+function renderSuccessfulCashout(
     result
 ) {
+
+    if (
+        result.transactionId &&
+        result.transactionId ===
+            lastRenderedCashoutTransactionId
+    ) {
+        return;
+    }
+
+
+    if (
+        result.transactionId
+    ) {
+
+        lastRenderedCashoutTransactionId =
+            result.transactionId;
+    }
+
+
+    const returnedAmount =
+        Number(
+            result.returnedAmount ??
+            result.amount ??
+            0
+        );
+
 
     renderWallet();
 
 
     setControlMessage(
         elements.cashoutMessage,
-        `成功 Cash Out：${formatCoins(result.returnedAmount)} 代幣。`,
+
+        result.automatic
+            ? `Auto Cash Out 成功：${formatCoins(
+                returnedAmount
+            )} 代幣。`
+            : `成功 Cash Out：${formatCoins(
+                returnedAmount
+            )} 代幣。`,
+
         "success"
     );
 
 
     showCashoutEffect(
         result.multiplier,
-        result.returnedAmount
+        returnedAmount
     );
 
 
@@ -1538,9 +1845,16 @@ function handleFlightEvent(
     event
 ) {
 
-    switch (event.type) {
+    switch (
+        event.type
+    ) {
 
-        case "COUNTDOWN_START":
+        /* -------------------------------------------------
+           COUNTDOWN START
+        -------------------------------------------------- */
+
+        case FLIGHT_EVENT_TYPES
+            .COUNTDOWN_START:
 
             renderPhase(
                 GAME_PHASES.COUNTDOWN
@@ -1555,27 +1869,31 @@ function handleFlightEvent(
             break;
 
 
-        case "COUNTDOWN_TICK":
+        /* -------------------------------------------------
+           COUNTDOWN TICK
+        -------------------------------------------------- */
 
-            if (
+        case FLIGHT_EVENT_TYPES
+            .COUNTDOWN_TICK:
+
+            setText(
+                elements.countdownValue,
+
                 event.remaining > 0
-            ) {
-                setText(
-                    elements.countdownValue,
-                    event.remaining
-                );
-            } else {
-                setText(
-                    elements.countdownValue,
-                    "GO"
-                );
-            }
+                    ? event.remaining
+                    : "GO"
+            );
 
 
             break;
 
 
-        case "COUNTDOWN_END":
+        /* -------------------------------------------------
+           COUNTDOWN END
+        -------------------------------------------------- */
+
+        case FLIGHT_EVENT_TYPES
+            .COUNTDOWN_END:
 
             hideElement(
                 elements.countdownOverlay
@@ -1585,7 +1903,12 @@ function handleFlightEvent(
             break;
 
 
-        case "FLIGHT_START":
+        /* -------------------------------------------------
+           FLIGHT START
+        -------------------------------------------------- */
+
+        case FLIGHT_EVENT_TYPES
+            .FLIGHT_START:
 
             hideElement(
                 elements.countdownOverlay
@@ -1616,7 +1939,17 @@ function handleFlightEvent(
             break;
 
 
-        case "MULTIPLIER_UPDATE":
+        /* -------------------------------------------------
+           MULTIPLIER UPDATE
+
+           IMPORTANT:
+           Auto Cash Out is NOT handled here.
+
+           cashout.js subscribes directly to Flight events.
+        -------------------------------------------------- */
+
+        case FLIGHT_EVENT_TYPES
+            .MULTIPLIER_UPDATE:
 
             renderMultiplier(
                 event.multiplier
@@ -1626,37 +1959,33 @@ function handleFlightEvent(
             renderCashoutPreview();
 
 
-            /*
-             Auto Cash Out is performed internally by
-             cashout.js.
-
-             Detect completed cashout state after the
-             multiplier event to render its effect.
-            */
-
-            detectAutomaticCashout();
-
-
             break;
 
 
-        case "CRASH":
+        /* -------------------------------------------------
+           NORMAL CRASH
+        -------------------------------------------------- */
 
-            renderCrash(
-                event.crashMultiplier
+        case FLIGHT_EVENT_TYPES
+            .CRASH:
+
+            handleNormalCrash(
+                event
             );
 
 
-            renderStateControls();
-
-
             break;
 
 
-        case "FLIGHT_ABORTED":
+        /* -------------------------------------------------
+           TECHNICAL ABORT
+        -------------------------------------------------- */
 
-            renderPhaseText(
-                "FLIGHT ERROR"
+        case FLIGHT_EVENT_TYPES
+            .FLIGHT_ABORTED:
+
+            handleFlightAborted(
+                event
             );
 
 
@@ -1670,58 +1999,154 @@ function handleFlightEvent(
 
 
 /* =========================================================
-   DETECT AUTO CASHOUT
+   NORMAL CRASH
+
+   This is the canonical normal settlement trigger.
 ========================================================= */
 
-let lastRenderedCashoutTransactionId =
-    null;
+function handleNormalCrash(
+    event
+) {
+
+    renderCrash(
+        event.crashMultiplier
+    );
 
 
-function detectAutomaticCashout() {
+    renderStateControls();
+
+
+    /*
+     Prevent duplicate settlement if a stale Flight callback
+     somehow emits Crash twice.
+    */
+
+    if (
+        runtime.settlementStarted
+    ) {
+        return;
+    }
+
+
+    runtime.settlementStarted =
+        true;
+
+
+    const result =
+        settleRound();
+
+
+    if (
+        !result.success
+    ) {
+
+        runtime.settlementStarted =
+            false;
+
+
+        console.error(
+            "[CG Flight] Round settlement failed:",
+            result
+        );
+
+
+        setControlMessage(
+            elements.cashoutMessage,
+            "本局結算發生錯誤。",
+            "error"
+        );
+    }
+}
+
+
+/* =========================================================
+   FLIGHT ABORTED
+
+   Technical failures must never become a normal LOSS.
+
+   PLACED / ACTIVE Bet:
+       refundRound()
+
+   No Bet / Cancelled:
+       settleNoBetRound()
+========================================================= */
+
+function handleFlightAborted(
+    event
+) {
+
+    renderPhaseText(
+        "FLIGHT ERROR"
+    );
+
+
+    setText(
+        elements.phaseLabel,
+        "ROUND INTERRUPTED"
+    );
+
+
+    if (
+        runtime.settlementStarted
+    ) {
+        return;
+    }
+
+
+    runtime.settlementStarted =
+        true;
+
 
     const state =
         getState();
 
 
+    let result;
+
+
     if (
-        !state.cashout.completed ||
-        !state.cashout.automatic
+        state.bet.status ===
+            BET_STATUS.PLACED ||
+        state.bet.status ===
+            BET_STATUS.ACTIVE
     ) {
-        return;
+
+        result =
+            refundRound(
+                event.reason ??
+                "FLIGHT_ABORTED"
+            );
+
+    } else {
+
+        result =
+            settleNoBetRound(
+                event.reason ??
+                "FLIGHT_ABORTED_NO_BET"
+            );
     }
 
 
     if (
-        !state.cashout.transactionId ||
-        state.cashout.transactionId ===
-        lastRenderedCashoutTransactionId
+        !result.success
     ) {
-        return;
+
+        runtime.settlementStarted =
+            false;
+
+
+        console.error(
+            "[CG Flight] Abort settlement failed:",
+            result
+        );
+
+
+        setControlMessage(
+            elements.betMessage,
+            "中止局退款／結算失敗。",
+            "error"
+        );
     }
-
-
-    lastRenderedCashoutTransactionId =
-        state.cashout
-            .transactionId;
-
-
-    renderWallet();
-
-
-    setControlMessage(
-        elements.cashoutMessage,
-        `Auto Cash Out 成功：${formatCoins(state.cashout.amount)} 代幣。`,
-        "success"
-    );
-
-
-    showCashoutEffect(
-        state.cashout.multiplier,
-        state.cashout.amount
-    );
-
-
-    renderStateControls();
 }
 
 
@@ -1735,7 +2160,8 @@ function handleSettlementEvent(
 
     if (
         event.type !==
-        "SETTLEMENT_COMPLETE"
+        SETTLEMENT_EVENT_TYPES
+            .SETTLEMENT_COMPLETED
     ) {
         return;
     }
@@ -1745,8 +2171,14 @@ function handleSettlementEvent(
 
     renderRecentResults();
 
+
+    /*
+     New settlement.js returns the canonical History Record
+     as event.record.
+    */
+
     renderSettlement(
-        event.settlement
+        event.record
     );
 
 
@@ -1756,6 +2188,15 @@ function handleSettlementEvent(
 
 
     renderStateControls();
+
+
+    if (
+        event.result ===
+        ROUND_RESULT.WIN
+    ) {
+
+        playWin();
+    }
 }
 
 
@@ -1797,41 +2238,6 @@ function renderRecentResults() {
         .replaceChildren();
 
 
-    if (
-        results.length === 0
-    ) {
-
-        for (
-            let i = 0;
-            i < 10;
-            i += 1
-        ) {
-
-            const placeholder =
-                document.createElement(
-                    "span"
-                );
-
-
-            placeholder.className =
-                "recent-result-placeholder";
-
-
-            placeholder.textContent =
-                "—";
-
-
-            elements.recentResults
-                .appendChild(
-                    placeholder
-                );
-        }
-
-
-        return;
-    }
-
-
     for (
         const result
         of results
@@ -1847,32 +2253,48 @@ function renderRecentResults() {
             "recent-result";
 
 
-        item.textContent =
-            formatMultiplier(
-                result.crashMultiplier
-            );
-
-
         if (
-            result.crashMultiplier <
-            2
+            result.crashMultiplier ===
+            null ||
+            result.crashMultiplier ===
+            undefined
         ) {
-            item.classList.add(
-                "is-low"
-            );
 
-        } else if (
-            result.crashMultiplier <
-            5
-        ) {
-            item.classList.add(
-                "is-mid"
-            );
+            item.textContent =
+                "—";
 
         } else {
-            item.classList.add(
-                "is-high"
-            );
+
+            item.textContent =
+                formatMultiplier(
+                    result.crashMultiplier
+                );
+
+
+            if (
+                result.crashMultiplier <
+                2
+            ) {
+
+                item.classList.add(
+                    "is-low"
+                );
+
+            } else if (
+                result.crashMultiplier <
+                5
+            ) {
+
+                item.classList.add(
+                    "is-mid"
+                );
+
+            } else {
+
+                item.classList.add(
+                    "is-high"
+                );
+            }
         }
 
 
@@ -1883,9 +2305,9 @@ function renderRecentResults() {
     }
 
 
-    /*
-     Fill remaining spaces until ten results exist.
-    */
+    /* -----------------------------------------------------
+       Always display ten slots.
+    ----------------------------------------------------- */
 
     for (
         let i = results.length;
@@ -1927,7 +2349,9 @@ function renderPhase(
         elements.roundStatus;
 
 
-    if (status) {
+    if (
+        status
+    ) {
 
         status.classList.remove(
             "is-betting",
@@ -1939,7 +2363,9 @@ function renderPhase(
     }
 
 
-    switch (phase) {
+    switch (
+        phase
+    ) {
 
         case GAME_PHASES.BETTING:
 
@@ -2032,6 +2458,12 @@ function renderPhase(
             );
 
 
+            setText(
+                elements.phaseLabel,
+                "CALCULATING RESULT"
+            );
+
+
             break;
 
 
@@ -2047,12 +2479,24 @@ function renderPhase(
             );
 
 
+            setText(
+                elements.phaseLabel,
+                "ROUND COMPLETE"
+            );
+
+
             break;
 
 
         default:
 
             renderPhaseText(
+                "WAITING"
+            );
+
+
+            setText(
+                elements.phaseLabel,
                 "WAITING"
             );
 
@@ -2086,7 +2530,9 @@ function renderMultiplier(
 ) {
 
     const value =
-        Number(multiplier);
+        Number(
+            multiplier
+        );
 
 
     if (
@@ -2100,7 +2546,9 @@ function renderMultiplier(
 
     setText(
         elements.multiplierDisplay,
-        `${value.toFixed(2)}×`
+        formatMultiplier(
+            value
+        )
     );
 }
 
@@ -2214,7 +2662,9 @@ function showCashoutEffect(
 
     setText(
         elements.cashoutEffectAmount,
-        `+${formatCoins(amount)}`
+        `+${formatCoins(
+            amount
+        )}`
     );
 
 
@@ -2287,6 +2737,7 @@ function renderStateControls() {
 
     renderAutoCashout();
 
+
     renderCashoutControls(
         state
     );
@@ -2317,7 +2768,7 @@ function renderBetControls(
     const inputEnabled =
         bettingOpen &&
         bet.status ===
-        BET_STATUS.NONE;
+            BET_STATUS.NONE;
 
 
     setDisabled(
@@ -2353,6 +2804,10 @@ function renderBetControls(
         !inputEnabled
     );
 
+
+    /* =====================================================
+       NONE
+    ====================================================== */
 
     if (
         bet.status ===
@@ -2391,6 +2846,10 @@ function renderBetControls(
     }
 
 
+    /* =====================================================
+       PLACED
+    ====================================================== */
+
     if (
         bet.status ===
         BET_STATUS.PLACED
@@ -2413,13 +2872,9 @@ function renderBetControls(
         );
 
 
-        /*
-         betting.js allows cancellation during both
-         BETTING and COUNTDOWN while status is PLACED.
-        */
-
         setDisabled(
             elements.cancelBetButton,
+
             !(
                 phase ===
                     GAME_PHASES.BETTING ||
@@ -2445,6 +2900,10 @@ function renderBetControls(
     );
 
 
+    /* =====================================================
+       ACTIVE
+    ====================================================== */
+
     if (
         bet.status ===
         BET_STATUS.ACTIVE
@@ -2461,7 +2920,16 @@ function renderBetControls(
             "IN FLIGHT"
         );
 
-    } else if (
+
+        return;
+    }
+
+
+    /* =====================================================
+       CASHED OUT
+    ====================================================== */
+
+    if (
         bet.status ===
         BET_STATUS.CASHED_OUT
     ) {
@@ -2477,7 +2945,16 @@ function renderBetControls(
             "COMPLETE"
         );
 
-    } else if (
+
+        return;
+    }
+
+
+    /* =====================================================
+       LOST
+    ====================================================== */
+
+    if (
         bet.status ===
         BET_STATUS.LOST
     ) {
@@ -2493,7 +2970,16 @@ function renderBetControls(
             "ROUND LOST"
         );
 
-    } else if (
+
+        return;
+    }
+
+
+    /* =====================================================
+       CANCELLED
+    ====================================================== */
+
+    if (
         bet.status ===
         BET_STATUS.CANCELLED
     ) {
@@ -2507,6 +2993,31 @@ function renderBetControls(
         setText(
             elements.betButtonText,
             "CANCELLED"
+        );
+
+
+        return;
+    }
+
+
+    /* =====================================================
+       REFUNDED
+    ====================================================== */
+
+    if (
+        bet.status ===
+        BET_STATUS.REFUNDED
+    ) {
+
+        setText(
+            elements.betStatusText,
+            "REFUNDED"
+        );
+
+
+        setText(
+            elements.betButtonText,
+            "REFUNDED"
         );
     }
 }
@@ -2529,12 +3040,15 @@ function renderAutoCashout() {
     elements.autoCashoutToggle
         ?.setAttribute(
             "aria-pressed",
-            String(enabled)
+            String(
+                enabled
+            )
         );
 
 
     setText(
         elements.autoCashoutToggle,
+
         enabled
             ? "ON"
             : "OFF"
@@ -2543,10 +3057,14 @@ function renderAutoCashout() {
 
     setText(
         elements.autoCashoutStatusText,
+
         enabled
             ? (
-                status.targetMultiplier
-                    ? `${Number(status.targetMultiplier).toFixed(2)}×`
+                status.targetMultiplier !==
+                    null
+                    ? `${Number(
+                        status.targetMultiplier
+                    ).toFixed(2)}×`
                     : "ENABLED"
             )
             : "DISABLED"
@@ -2618,7 +3136,9 @@ function renderCashoutControls(
         );
 
 
-    if (active) {
+    if (
+        active
+    ) {
 
         setText(
             elements.cashoutStatusText,
@@ -2686,7 +3206,8 @@ function renderCashoutPreview() {
     setText(
         elements.cashoutBetAmount,
         formatCoins(
-            preview.betAmount ?? 0
+            preview.betAmount ??
+            0
         )
     );
 
@@ -2694,7 +3215,8 @@ function renderCashoutPreview() {
     setText(
         elements.cashoutCurrentMultiplier,
         Number(
-            preview.multiplier ?? 1
+            preview.multiplier ??
+            1
         ).toFixed(2)
     );
 }
@@ -2702,13 +3224,17 @@ function renderCashoutPreview() {
 
 /* =========================================================
    SETTLEMENT RESULT
+
+   Receives canonical History Record from settlement.js.
 ========================================================= */
 
 function renderSettlement(
-    settlement
+    record
 ) {
 
-    if (!settlement) {
+    if (
+        !record
+    ) {
         return;
     }
 
@@ -2722,8 +3248,12 @@ function renderSettlement(
 
 
     const result =
-        settlement.result;
+        record.result;
 
+
+    /* =====================================================
+       WIN
+    ====================================================== */
 
     if (
         result ===
@@ -2737,8 +3267,13 @@ function renderSettlement(
             );
 
 
-        elements.roundResultIcon.src =
-            ICONS.trophy;
+        if (
+            elements.roundResultIcon
+        ) {
+
+            elements.roundResultIcon.src =
+                ICONS.trophy;
+        }
 
 
         setText(
@@ -2752,7 +3287,13 @@ function renderSettlement(
             "CASH OUT SUCCESS"
         );
 
-    } else if (
+    }
+
+    /* =====================================================
+       LOSS
+    ====================================================== */
+
+    else if (
         result ===
         ROUND_RESULT.LOSS
     ) {
@@ -2764,8 +3305,13 @@ function renderSettlement(
             );
 
 
-        elements.roundResultIcon.src =
-            ICONS.crash;
+        if (
+            elements.roundResultIcon
+        ) {
+
+            elements.roundResultIcon.src =
+                ICONS.crash;
+        }
 
 
         setText(
@@ -2779,13 +3325,24 @@ function renderSettlement(
             "CRASHED BEFORE CASH OUT"
         );
 
-    } else if (
+    }
+
+    /* =====================================================
+       REFUND
+    ====================================================== */
+
+    else if (
         result ===
         ROUND_RESULT.REFUND
     ) {
 
-        elements.roundResultIcon.src =
-            ICONS.trophy;
+        if (
+            elements.roundResultIcon
+        ) {
+
+            elements.roundResultIcon.src =
+                ICONS.trophy;
+        }
 
 
         setText(
@@ -2796,13 +3353,24 @@ function renderSettlement(
 
         setText(
             elements.roundResultTitle,
-            "NO RESULT"
+            "ROUND INTERRUPTED"
         );
 
-    } else {
+    }
 
-        elements.roundResultIcon.src =
-            ICONS.trophy;
+    /* =====================================================
+       NO BET
+    ====================================================== */
+
+    else {
+
+        if (
+            elements.roundResultIcon
+        ) {
+
+            elements.roundResultIcon.src =
+                ICONS.trophy;
+        }
 
 
         setText(
@@ -2818,46 +3386,76 @@ function renderSettlement(
     }
 
 
+    /* -----------------------------------------------------
+       Bet
+    ----------------------------------------------------- */
+
     setText(
         elements.resultBetAmount,
         formatCoins(
-            settlement
-                .financial
-                .wagered
+            record.financial
+                ?.wagered ??
+            record.wagered ??
+            0
         )
     );
+
+
+    /* -----------------------------------------------------
+       Cash Out
+    ----------------------------------------------------- */
+
+    const cashoutMultiplier =
+        record.cashout
+            ?.multiplier ??
+        record.cashoutMultiplier;
 
 
     setText(
         elements.resultCashoutMultiplier,
 
-        settlement
-            .cashout
-            .completed
+        cashoutMultiplier !==
+            null &&
+        cashoutMultiplier !==
+            undefined
             ? formatMultiplier(
-                settlement
-                    .cashout
-                    .multiplier
+                cashoutMultiplier
             )
             : "—"
     );
 
 
+    /* -----------------------------------------------------
+       Crash
+
+       Technical REFUND may have no legitimate Crash result.
+    ----------------------------------------------------- */
+
     setText(
         elements.resultCrashMultiplier,
-        formatMultiplier(
-            settlement
-                .crashMultiplier
-        )
+
+        record.crashMultiplier !==
+            null &&
+        record.crashMultiplier !==
+            undefined
+            ? formatMultiplier(
+                record.crashMultiplier
+            )
+            : "—"
     );
 
+
+    /* -----------------------------------------------------
+       Profit
+    ----------------------------------------------------- */
 
     setText(
         elements.resultProfit,
         formatSignedNumber(
-            settlement
-                .financial
-                .profit
+            record.financial
+                ?.profit ??
+            record.profit ??
+            0
         )
     );
 
@@ -3010,9 +3608,14 @@ function updateSettingsUI() {
         getSettings();
 
 
+    /* -----------------------------------------------------
+       Header Sound
+    ----------------------------------------------------- */
+
     if (
         elements.soundToggleIcon
     ) {
+
         elements.soundToggleIcon.src =
             settings.soundEnabled
                 ? ICONS.soundOn
@@ -3020,9 +3623,24 @@ function updateSettingsUI() {
     }
 
 
+    elements.soundToggleButton
+        ?.setAttribute(
+            "aria-label",
+
+            settings.soundEnabled
+                ? "關閉音效"
+                : "開啟音效"
+        );
+
+
+    /* -----------------------------------------------------
+       Header Music
+    ----------------------------------------------------- */
+
     if (
         elements.musicToggleIcon
     ) {
+
         elements.musicToggleIcon.src =
             settings.musicEnabled
                 ? ICONS.musicOn
@@ -3030,8 +3648,23 @@ function updateSettingsUI() {
     }
 
 
+    elements.musicToggleButton
+        ?.setAttribute(
+            "aria-label",
+
+            settings.musicEnabled
+                ? "關閉背景音樂"
+                : "開啟背景音樂"
+        );
+
+
+    /* -----------------------------------------------------
+       Settings Modal
+    ----------------------------------------------------- */
+
     setText(
         elements.settingsSoundToggle,
+
         settings.soundEnabled
             ? "ON"
             : "OFF"
@@ -3040,6 +3673,7 @@ function updateSettingsUI() {
 
     setText(
         elements.settingsMusicToggle,
+
         settings.musicEnabled
             ? "ON"
             : "OFF"
@@ -3077,6 +3711,10 @@ function openSettings() {
     showElement(
         elements.settingsModal
     );
+
+
+    document.body.style.overflow =
+        "hidden";
 }
 
 
@@ -3088,6 +3726,10 @@ function closeSettings() {
     hideElement(
         elements.settingsModal
     );
+
+
+    document.body.style.overflow =
+        "";
 }
 
 
@@ -3121,7 +3763,12 @@ function handleBackLobbyClick(
             BET_STATUS.ACTIVE;
 
 
-    if (!dangerousToLeave) {
+    if (
+        !dangerousToLeave
+    ) {
+
+        playClick();
+
         return;
     }
 
@@ -3135,6 +3782,42 @@ function handleBackLobbyClick(
     showElement(
         elements.leaveConfirmModal
     );
+
+
+    document.body.style.overflow =
+        "hidden";
+}
+
+
+/* =========================================================
+   CONFIRM LEAVE
+========================================================= */
+
+function handleConfirmLeave(
+    event
+) {
+
+    event?.preventDefault();
+
+
+    runtime.leavingConfirmed =
+        true;
+
+
+    clearBettingTimer();
+
+    clearCashoutEffectTimer();
+
+
+    /*
+     Do not refund an active wager simply because the player
+     voluntarily leaves the page. Otherwise leaving during
+     a bad flight becomes an exploitable refund mechanism.
+    */
+
+
+    window.location.href =
+        "./index.html";
 }
 
 
@@ -3150,6 +3833,10 @@ function closeLeaveModal() {
     hideElement(
         elements.leaveConfirmModal
     );
+
+
+    document.body.style.overflow =
+        "";
 }
 
 
@@ -3170,8 +3857,9 @@ function handleKeydown(
 
 
     if (
-        !elements.leaveConfirmModal
-            ?.hidden
+        isElementOpen(
+            elements.leaveConfirmModal
+        )
     ) {
 
         closeLeaveModal();
@@ -3181,12 +3869,37 @@ function handleKeydown(
 
 
     if (
-        !elements.settingsModal
-            ?.hidden
+        isElementOpen(
+            elements.settingsModal
+        )
     ) {
 
         closeSettings();
     }
+}
+
+
+/* =========================================================
+   ELEMENT OPEN CHECK
+========================================================= */
+
+function isElementOpen(
+    element
+) {
+
+    if (
+        !element
+    ) {
+        return false;
+    }
+
+
+    return (
+        !element.hidden &&
+        !element.classList.contains(
+            "is-hidden"
+        )
+    );
 }
 
 
@@ -3200,7 +3913,9 @@ function setControlMessage(
     type = null
 ) {
 
-    if (!element) {
+    if (
+        !element
+    ) {
         return;
     }
 
@@ -3213,8 +3928,10 @@ function setControlMessage(
 
 
     if (
-        type === "error"
+        type ===
+        "error"
     ) {
+
         element.classList.add(
             "is-error"
         );
@@ -3222,8 +3939,10 @@ function setControlMessage(
 
 
     if (
-        type === "success"
+        type ===
+        "success"
     ) {
+
         element.classList.add(
             "is-success"
         );
@@ -3231,8 +3950,10 @@ function setControlMessage(
 
 
     if (
-        type === "warning"
+        type ===
+        "warning"
     ) {
+
         element.classList.add(
             "is-warning"
         );
@@ -3252,7 +3973,9 @@ function clearControlMessage(
     element
 ) {
 
-    if (!element) {
+    if (
+        !element
+    ) {
         return;
     }
 
@@ -3280,6 +4003,15 @@ window.addEventListener(
         clearBettingTimer();
 
         clearCashoutEffectTimer();
+
+
+        /*
+         Page teardown only.
+
+         Do not turn a voluntary page close into REFUND.
+        */
+
+        pauseBgm();
     }
 );
 
