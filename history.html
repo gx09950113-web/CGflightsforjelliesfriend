@@ -1,0 +1,1304 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <meta
+        name="description"
+        content="CG Flight - 開獎歷史與玩家單局結算紀錄"
+    >
+
+    <title>CG Flight - History</title>
+
+    <!-- Favicon -->
+    <link
+        rel="icon"
+        type="image/png"
+        href="./assets/images/favicon.png"
+    >
+
+    <!-- Styles -->
+    <link
+        rel="stylesheet"
+        href="./css/common.css"
+    >
+
+    <link
+        rel="stylesheet"
+        href="./css/history.css"
+    >
+</head>
+
+<body>
+
+    <!-- =========================================================
+         APP
+    ========================================================== -->
+    <div
+        id="app"
+        class="app history-app"
+    >
+
+        <!-- =====================================================
+             BACKGROUND
+        ====================================================== -->
+        <div
+            class="history-background"
+            aria-hidden="true"
+        ></div>
+
+
+        <!-- =====================================================
+             HEADER
+        ====================================================== -->
+        <header class="history-header">
+
+            <!-- Left -->
+            <div class="history-header-left">
+
+                <a
+                    id="backButton"
+                    class="icon-button"
+                    href="./index.html"
+                    aria-label="返回大廳"
+                    title="返回大廳"
+                >
+                    <img
+                        src="./assets/icons/back.svg"
+                        alt=""
+                        aria-hidden="true"
+                    >
+                </a>
+
+
+                <a
+                    class="history-brand"
+                    href="./index.html"
+                    aria-label="CG Flight 大廳"
+                >
+                    <img
+                        class="history-brand-logo"
+                        src="./assets/images/logo-small.webp"
+                        alt="CG Flight"
+                    >
+                </a>
+
+            </div>
+
+
+            <!-- Center -->
+            <div class="history-header-center">
+
+                <div class="history-page-title">
+
+                    <img
+                        src="./assets/icons/history.svg"
+                        alt=""
+                        aria-hidden="true"
+                    >
+
+                    <div>
+                        <span>
+                            FLIGHT RECORDS
+                        </span>
+
+                        <h1>
+                            History
+                        </h1>
+                    </div>
+
+                </div>
+
+            </div>
+
+
+            <!-- Right -->
+            <div class="history-header-right">
+
+                <!-- Wallet -->
+                <div
+                    class="history-wallet"
+                    aria-label="玩家代幣餘額"
+                >
+                    <img
+                        src="./assets/icons/coin.svg"
+                        alt=""
+                        aria-hidden="true"
+                    >
+
+                    <div class="history-wallet-content">
+
+                        <span class="history-wallet-label">
+                            BALANCE
+                        </span>
+
+                        <strong
+                            id="walletBalance"
+                            class="history-wallet-balance"
+                        >
+                            0
+                        </strong>
+
+                    </div>
+                </div>
+
+
+                <!-- Sound -->
+                <button
+                    id="soundToggleButton"
+                    class="icon-button"
+                    type="button"
+                    aria-label="切換音效"
+                    title="音效"
+                >
+                    <img
+                        id="soundToggleIcon"
+                        src="./assets/icons/sound-on.svg"
+                        alt=""
+                        aria-hidden="true"
+                    >
+                </button>
+
+
+                <!-- Music -->
+                <button
+                    id="musicToggleButton"
+                    class="icon-button"
+                    type="button"
+                    aria-label="切換背景音樂"
+                    title="背景音樂"
+                >
+                    <img
+                        id="musicToggleIcon"
+                        src="./assets/icons/music-on.svg"
+                        alt=""
+                        aria-hidden="true"
+                    >
+                </button>
+
+
+                <!-- Settings -->
+                <button
+                    id="settingsButton"
+                    class="icon-button"
+                    type="button"
+                    aria-label="開啟設定"
+                    title="設定"
+                >
+                    <img
+                        src="./assets/icons/settings.svg"
+                        alt=""
+                        aria-hidden="true"
+                    >
+                </button>
+
+            </div>
+
+        </header>
+
+
+        <!-- =====================================================
+             MAIN
+        ====================================================== -->
+        <main class="history-main">
+
+
+            <!-- =================================================
+                 INTRO
+            ================================================== -->
+            <section class="history-intro">
+
+                <div class="history-intro-copy">
+
+                    <span class="history-intro-eyebrow">
+                        FLIGHT ARCHIVE
+                    </span>
+
+                    <h2>
+                        開獎歷史
+                    </h2>
+
+                    <p>
+                        查看 CG Flight 最近開獎倍率、玩家下注結果、Cash Out 紀錄與單局詳細結算。
+                    </p>
+
+                </div>
+
+
+                <div class="history-intro-actions">
+
+                    <a
+                        class="history-play-button"
+                        href="./game.html"
+                    >
+                        <img
+                            src="./assets/icons/plane.svg"
+                            alt=""
+                            aria-hidden="true"
+                        >
+
+                        <span>
+                            RETURN TO FLIGHT
+                        </span>
+                    </a>
+
+                </div>
+
+            </section>
+
+
+            <!-- =================================================
+                 SUMMARY
+            ================================================== -->
+            <section
+                class="history-summary-section"
+                aria-labelledby="historySummaryTitle"
+            >
+
+                <div class="section-heading">
+
+                    <div class="section-heading-main">
+
+                        <img
+                            src="./assets/icons/statistics.svg"
+                            alt=""
+                            aria-hidden="true"
+                        >
+
+                        <div>
+                            <span>
+                                OVERVIEW
+                            </span>
+
+                            <h2 id="historySummaryTitle">
+                                歷史摘要
+                            </h2>
+                        </div>
+
+                    </div>
+
+                </div>
+
+
+                <div class="history-summary-grid">
+
+                    <!-- Total Rounds -->
+                    <article class="history-summary-card">
+
+                        <span class="history-summary-label">
+                            TOTAL ROUNDS
+                        </span>
+
+                        <strong
+                            id="summaryTotalRounds"
+                            class="history-summary-value"
+                        >
+                            0
+                        </strong>
+
+                        <small>
+                            已保存局數
+                        </small>
+
+                    </article>
+
+
+                    <!-- Wins -->
+                    <article class="history-summary-card is-win">
+
+                        <span class="history-summary-label">
+                            WINS
+                        </span>
+
+                        <strong
+                            id="summaryWins"
+                            class="history-summary-value"
+                        >
+                            0
+                        </strong>
+
+                        <small>
+                            成功 Cash Out
+                        </small>
+
+                    </article>
+
+
+                    <!-- Losses -->
+                    <article class="history-summary-card is-loss">
+
+                        <span class="history-summary-label">
+                            LOSSES
+                        </span>
+
+                        <strong
+                            id="summaryLosses"
+                            class="history-summary-value"
+                        >
+                            0
+                        </strong>
+
+                        <small>
+                            墜毀損失
+                        </small>
+
+                    </article>
+
+
+                    <!-- Highest Crash -->
+                    <article class="history-summary-card">
+
+                        <span class="history-summary-label">
+                            HIGHEST CRASH
+                        </span>
+
+                        <strong
+                            id="summaryHighestCrash"
+                            class="history-summary-value"
+                        >
+                            0.00×
+                        </strong>
+
+                        <small>
+                            最高開獎倍率
+                        </small>
+
+                    </article>
+
+
+                    <!-- Average Crash -->
+                    <article class="history-summary-card">
+
+                        <span class="history-summary-label">
+                            AVG. CRASH
+                        </span>
+
+                        <strong
+                            id="summaryAverageCrash"
+                            class="history-summary-value"
+                        >
+                            0.00×
+                        </strong>
+
+                        <small>
+                            平均墜毀倍率
+                        </small>
+
+                    </article>
+
+
+                    <!-- Average Cashout -->
+                    <article class="history-summary-card">
+
+                        <span class="history-summary-label">
+                            AVG. CASH OUT
+                        </span>
+
+                        <strong
+                            id="summaryAverageCashout"
+                            class="history-summary-value"
+                        >
+                            0.00×
+                        </strong>
+
+                        <small>
+                            平均成功 Cash Out 倍率
+                        </small>
+
+                    </article>
+
+                </div>
+
+            </section>
+
+
+            <!-- =================================================
+                 RECENT 10
+            ================================================== -->
+            <section
+                class="recent-history-section"
+                aria-labelledby="recentHistoryTitle"
+            >
+
+                <div class="section-heading">
+
+                    <div class="section-heading-main">
+
+                        <img
+                            src="./assets/icons/crash.svg"
+                            alt=""
+                            aria-hidden="true"
+                        >
+
+                        <div>
+                            <span>
+                                LATEST RESULTS
+                            </span>
+
+                            <h2 id="recentHistoryTitle">
+                                近 10 期結果
+                            </h2>
+                        </div>
+
+                    </div>
+
+                </div>
+
+
+                <div
+                    id="recentResults"
+                    class="recent-history-results"
+                    aria-live="polite"
+                >
+
+                    <div class="recent-history-placeholder">
+                        —
+                    </div>
+
+                    <div class="recent-history-placeholder">
+                        —
+                    </div>
+
+                    <div class="recent-history-placeholder">
+                        —
+                    </div>
+
+                    <div class="recent-history-placeholder">
+                        —
+                    </div>
+
+                    <div class="recent-history-placeholder">
+                        —
+                    </div>
+
+                    <div class="recent-history-placeholder">
+                        —
+                    </div>
+
+                    <div class="recent-history-placeholder">
+                        —
+                    </div>
+
+                    <div class="recent-history-placeholder">
+                        —
+                    </div>
+
+                    <div class="recent-history-placeholder">
+                        —
+                    </div>
+
+                    <div class="recent-history-placeholder">
+                        —
+                    </div>
+
+                </div>
+
+            </section>
+
+
+            <!-- =================================================
+                 HISTORY LIST
+            ================================================== -->
+            <section
+                class="history-list-section"
+                aria-labelledby="historyListTitle"
+            >
+
+                <!-- Header -->
+                <div class="history-list-header">
+
+                    <div class="section-heading">
+
+                        <div class="section-heading-main">
+
+                            <img
+                                src="./assets/icons/history.svg"
+                                alt=""
+                                aria-hidden="true"
+                            >
+
+                            <div>
+                                <span>
+                                    ROUND RECORDS
+                                </span>
+
+                                <h2 id="historyListTitle">
+                                    單局紀錄
+                                </h2>
+                            </div>
+
+                        </div>
+
+                    </div>
+
+
+                    <!-- Count -->
+                    <div class="history-result-count">
+
+                        <span>
+                            RESULTS
+                        </span>
+
+                        <strong id="historyResultCount">
+                            0
+                        </strong>
+
+                    </div>
+
+                </div>
+
+
+                <!-- =================================================
+                     FILTERS
+                ================================================== -->
+                <div class="history-filters">
+
+                    <!-- Result -->
+                    <div class="history-filter-group">
+
+                        <label for="resultFilter">
+                            RESULT
+                        </label>
+
+                        <select
+                            id="resultFilter"
+                            class="history-filter-select"
+                        >
+                            <option value="">
+                                All Results
+                            </option>
+
+                            <option value="WIN">
+                                Win
+                            </option>
+
+                            <option value="LOSS">
+                                Loss
+                            </option>
+
+                            <option value="REFUND">
+                                Refund
+                            </option>
+
+                            <option value="NO_BET">
+                                No Bet
+                            </option>
+                        </select>
+
+                    </div>
+
+
+                    <!-- Bet -->
+                    <div class="history-filter-group">
+
+                        <label for="betFilter">
+                            BET
+                        </label>
+
+                        <select
+                            id="betFilter"
+                            class="history-filter-select"
+                        >
+                            <option value="">
+                                All Rounds
+                            </option>
+
+                            <option value="BET">
+                                With Bet
+                            </option>
+
+                            <option value="NO_BET">
+                                Without Bet
+                            </option>
+                        </select>
+
+                    </div>
+
+
+                    <!-- Cashout -->
+                    <div class="history-filter-group">
+
+                        <label for="cashoutFilter">
+                            CASH OUT
+                        </label>
+
+                        <select
+                            id="cashoutFilter"
+                            class="history-filter-select"
+                        >
+                            <option value="">
+                                All Types
+                            </option>
+
+                            <option value="MANUAL">
+                                Manual
+                            </option>
+
+                            <option value="AUTO">
+                                Auto
+                            </option>
+
+                            <option value="NONE">
+                                No Cash Out
+                            </option>
+                        </select>
+
+                    </div>
+
+
+                    <!-- Reset -->
+                    <div class="history-filter-actions">
+
+                        <button
+                            id="resetFiltersButton"
+                            class="history-reset-filter-button"
+                            type="button"
+                        >
+                            RESET
+                        </button>
+
+                    </div>
+
+                </div>
+
+
+                <!-- =================================================
+                     DESKTOP TABLE
+                ================================================== -->
+                <div class="history-table-wrapper">
+
+                    <table class="history-table">
+
+                        <thead>
+                            <tr>
+
+                                <th scope="col">
+                                    ROUND
+                                </th>
+
+                                <th scope="col">
+                                    TIME
+                                </th>
+
+                                <th scope="col">
+                                    CRASH
+                                </th>
+
+                                <th scope="col">
+                                    BET
+                                </th>
+
+                                <th scope="col">
+                                    CASH OUT
+                                </th>
+
+                                <th scope="col">
+                                    RETURN
+                                </th>
+
+                                <th scope="col">
+                                    PROFIT
+                                </th>
+
+                                <th scope="col">
+                                    RESULT
+                                </th>
+
+                                <th
+                                    scope="col"
+                                    aria-label="詳細資料"
+                                >
+                                </th>
+
+                            </tr>
+                        </thead>
+
+
+                        <tbody
+                            id="historyTableBody"
+                        >
+
+                            <tr class="history-empty-row">
+
+                                <td colspan="9">
+
+                                    <div class="history-empty-state">
+
+                                        <img
+                                            src="./assets/icons/history.svg"
+                                            alt=""
+                                            aria-hidden="true"
+                                        >
+
+                                        <strong>
+                                            尚無開獎紀錄
+                                        </strong>
+
+                                        <span>
+                                            完成第一局飛行後，紀錄將顯示於此。
+                                        </span>
+
+                                    </div>
+
+                                </td>
+
+                            </tr>
+
+                        </tbody>
+
+                    </table>
+
+                </div>
+
+
+                <!-- =================================================
+                     MOBILE CARDS
+                ================================================== -->
+                <div
+                    id="historyCardList"
+                    class="history-card-list"
+                    aria-live="polite"
+                >
+                    <!-- history.js creates mobile cards here -->
+                </div>
+
+
+                <!-- =================================================
+                     PAGINATION
+                ================================================== -->
+                <nav
+                    class="history-pagination"
+                    aria-label="歷史紀錄分頁"
+                >
+
+                    <button
+                        id="previousPageButton"
+                        class="history-page-button"
+                        type="button"
+                        disabled
+                    >
+                        PREVIOUS
+                    </button>
+
+
+                    <div class="history-page-indicator">
+
+                        <span>
+                            PAGE
+                        </span>
+
+                        <strong id="currentPageDisplay">
+                            1
+                        </strong>
+
+                        <span>
+                            /
+                        </span>
+
+                        <strong id="totalPagesDisplay">
+                            1
+                        </strong>
+
+                    </div>
+
+
+                    <button
+                        id="nextPageButton"
+                        class="history-page-button"
+                        type="button"
+                        disabled
+                    >
+                        NEXT
+                    </button>
+
+                </nav>
+
+            </section>
+
+        </main>
+
+
+        <!-- =====================================================
+             FOOTER
+        ====================================================== -->
+        <footer class="history-footer">
+
+            <span>
+                CG FLIGHT
+            </span>
+
+            <span class="history-footer-divider">
+                •
+            </span>
+
+            <span>
+                Virtual Coins Only
+            </span>
+
+            <span class="history-footer-divider">
+                •
+            </span>
+
+            <a href="./rules.html">
+                Rules
+            </a>
+
+            <span class="history-footer-divider">
+                •
+            </span>
+
+            <a href="./game.html">
+                Flight
+            </a>
+
+        </footer>
+
+    </div>
+
+
+
+    <!-- =========================================================
+         ROUND DETAIL MODAL
+    ========================================================== -->
+    <div
+        id="roundDetailModal"
+        class="modal-overlay is-hidden"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="roundDetailTitle"
+        hidden
+    >
+
+        <div class="modal round-detail-modal">
+
+            <!-- Header -->
+            <header class="round-detail-header">
+
+                <div class="round-detail-heading">
+
+                    <img
+                        src="./assets/icons/info.svg"
+                        alt=""
+                        aria-hidden="true"
+                    >
+
+                    <div>
+
+                        <span>
+                            ROUND DETAIL
+                        </span>
+
+                        <h2 id="roundDetailTitle">
+                            單局詳細結算
+                        </h2>
+
+                    </div>
+
+                </div>
+
+
+                <button
+                    id="closeRoundDetailButton"
+                    class="modal-close-button"
+                    type="button"
+                    aria-label="關閉單局詳細資料"
+                >
+                    ×
+                </button>
+
+            </header>
+
+
+            <!-- Body -->
+            <div class="round-detail-body">
+
+                <!-- Main Result -->
+                <section class="round-detail-result">
+
+                    <div class="round-detail-result-main">
+
+                        <span class="round-detail-result-label">
+                            RESULT
+                        </span>
+
+                        <strong
+                            id="detailResult"
+                            class="round-detail-result-value"
+                        >
+                            —
+                        </strong>
+
+                    </div>
+
+
+                    <div class="round-detail-crash">
+
+                        <span>
+                            CRASH
+                        </span>
+
+                        <strong id="detailCrashMultiplier">
+                            —
+                        </strong>
+
+                    </div>
+
+                </section>
+
+
+                <!-- Identification -->
+                <section class="round-detail-section">
+
+                    <h3>
+                        Round
+                    </h3>
+
+
+                    <div class="round-detail-grid">
+
+                        <div class="round-detail-item">
+
+                            <span>
+                                ROUND ID
+                            </span>
+
+                            <code id="detailRoundId">
+                                —
+                            </code>
+
+                        </div>
+
+
+                        <div class="round-detail-item">
+
+                            <span>
+                                RECORDED AT
+                            </span>
+
+                            <strong id="detailRecordedAt">
+                                —
+                            </strong>
+
+                        </div>
+
+
+                        <div class="round-detail-item">
+
+                            <span>
+                                FLIGHT TIME
+                            </span>
+
+                            <strong id="detailFlightDuration">
+                                —
+                            </strong>
+
+                        </div>
+
+                    </div>
+
+                </section>
+
+
+                <!-- Bet -->
+                <section class="round-detail-section">
+
+                    <h3>
+                        Bet
+                    </h3>
+
+
+                    <div class="round-detail-grid">
+
+                        <div class="round-detail-item">
+
+                            <span>
+                                STATUS
+                            </span>
+
+                            <strong id="detailBetStatus">
+                                —
+                            </strong>
+
+                        </div>
+
+
+                        <div class="round-detail-item">
+
+                            <span>
+                                AMOUNT
+                            </span>
+
+                            <strong id="detailBetAmount">
+                                0
+                            </strong>
+
+                        </div>
+
+
+                        <div class="round-detail-item">
+
+                            <span>
+                                PLACED AT
+                            </span>
+
+                            <strong id="detailBetPlacedAt">
+                                —
+                            </strong>
+
+                        </div>
+
+                    </div>
+
+                </section>
+
+
+                <!-- Auto Cash Out -->
+                <section class="round-detail-section">
+
+                    <h3>
+                        Auto Cash Out
+                    </h3>
+
+
+                    <div class="round-detail-grid">
+
+                        <div class="round-detail-item">
+
+                            <span>
+                                ENABLED
+                            </span>
+
+                            <strong id="detailAutoEnabled">
+                                NO
+                            </strong>
+
+                        </div>
+
+
+                        <div class="round-detail-item">
+
+                            <span>
+                                TARGET
+                            </span>
+
+                            <strong id="detailAutoTarget">
+                                —
+                            </strong>
+
+                        </div>
+
+                    </div>
+
+                </section>
+
+
+                <!-- Cash Out -->
+                <section class="round-detail-section">
+
+                    <h3>
+                        Cash Out
+                    </h3>
+
+
+                    <div class="round-detail-grid">
+
+                        <div class="round-detail-item">
+
+                            <span>
+                                TYPE
+                            </span>
+
+                            <strong id="detailCashoutType">
+                                —
+                            </strong>
+
+                        </div>
+
+
+                        <div class="round-detail-item">
+
+                            <span>
+                                MULTIPLIER
+                            </span>
+
+                            <strong id="detailCashoutMultiplier">
+                                —
+                            </strong>
+
+                        </div>
+
+
+                        <div class="round-detail-item">
+
+                            <span>
+                                RETURN
+                            </span>
+
+                            <strong id="detailCashoutAmount">
+                                0
+                            </strong>
+
+                        </div>
+
+                    </div>
+
+                </section>
+
+
+                <!-- Financial -->
+                <section class="round-detail-section">
+
+                    <h3>
+                        Settlement
+                    </h3>
+
+
+                    <div class="round-detail-financial">
+
+                        <div class="round-financial-card">
+
+                            <span>
+                                WAGERED
+                            </span>
+
+                            <strong id="detailWagered">
+                                0
+                            </strong>
+
+                        </div>
+
+
+                        <div class="round-financial-card">
+
+                            <span>
+                                RETURNED
+                            </span>
+
+                            <strong id="detailReturned">
+                                0
+                            </strong>
+
+                        </div>
+
+
+                        <div class="round-financial-card">
+
+                            <span>
+                                PROFIT
+                            </span>
+
+                            <strong id="detailProfit">
+                                0
+                            </strong>
+
+                        </div>
+
+                    </div>
+
+                </section>
+
+            </div>
+
+        </div>
+
+    </div>
+
+
+
+    <!-- =========================================================
+         SETTINGS MODAL
+    ========================================================== -->
+    <div
+        id="settingsModal"
+        class="modal-overlay is-hidden"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="settingsModalTitle"
+        hidden
+    >
+
+        <div class="modal settings-modal">
+
+            <header class="settings-modal-header">
+
+                <h2 id="settingsModalTitle">
+                    Settings
+                </h2>
+
+
+                <button
+                    id="closeSettingsButton"
+                    class="modal-close-button"
+                    type="button"
+                    aria-label="關閉設定"
+                >
+                    ×
+                </button>
+
+            </header>
+
+
+            <div class="settings-modal-body">
+
+                <!-- Sound -->
+                <div class="settings-row">
+
+                    <div class="settings-row-label">
+                        Sound Effects
+                    </div>
+
+
+                    <button
+                        id="settingsSoundToggle"
+                        class="settings-toggle-button"
+                        type="button"
+                        aria-pressed="true"
+                    >
+                        ON
+                    </button>
+
+                </div>
+
+
+                <!-- Music -->
+                <div class="settings-row">
+
+                    <div class="settings-row-label">
+                        Background Music
+                    </div>
+
+
+                    <button
+                        id="settingsMusicToggle"
+                        class="settings-toggle-button"
+                        type="button"
+                        aria-pressed="true"
+                    >
+                        ON
+                    </button>
+
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+
+
+
+    <!-- =========================================================
+         PAGE SCRIPT
+    ========================================================== -->
+    <script
+        type="module"
+        src="./js/pages/history.js"
+    ></script>
+
+</body>
+</html>
