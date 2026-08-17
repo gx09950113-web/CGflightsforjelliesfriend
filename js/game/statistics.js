@@ -2,56 +2,55 @@
    CG FLIGHT
    js/game/statistics.js
 
-   Persistent statistics layer.
+   Persistent player statistics manager.
 
    Responsibilities:
-   - Consume completed settlement records
-   - Update persistent player statistics
-   - Prevent duplicate statistics across page reloads
-   - Count completed rounds
-   - Count valid bets
-   - Track wagered / returned coins
-   - Track gross profit / gross loss
-   - Track cashout / crash-loss counts
-   - Track highest multipliers
-   - Track highest single-round win
-   - Produce derived statistics
-   - Automatically record completed settlements
-
-   Persistent duplicate strategy:
-   - Every history entry may contain:
-         statisticsRecorded: true
-   - Statistics and this marker are written atomically
-     through the same updateData() operation.
+   - Record completed round statistics
+   - Prevent duplicate round counting
+   - Maintain aggregate player statistics
+   - Mark History entries as statisticsRecorded
+   - Expose raw statistics
+   - Expose UI-oriented summary
+   - Migrate legacy History statistic markers
+   - Rebuild statistics from History when required
 
    IMPORTANT:
-   This module does NOT:
-   - Perform settlement
-   - Modify wallet balance
-   - Generate crash results
+   Valid Bets:
+       WIN
+       LOSS
+
+   NOT valid bets:
+       REFUND
+       NO_BET
+
+   Therefore:
+       REFUND / NO_BET do not affect:
+       - totalBets
+       - totalWagered
+       - totalReturned
+       - totalProfit
+       - totalLoss
+       - cashoutCount
+       - crashLossCount
+
+   totalRounds counts ALL persisted round records.
 ========================================================= */
+
 
 import {
     getData,
     updateData
 } from "../core/storage.js";
 
+
 import {
     ROUND_RESULT
 } from "./state.js";
 
-import {
-    subscribeToSettlement
-} from "./settlement.js";
 
 import {
-    recordHistory
-} from "./history.js";
-
-import {
-    roundTo,
     clone,
-    isFiniteNumber
+    roundTo
 } from "../core/utils.js";
 
 
@@ -60,85 +59,77 @@ import {
 ========================================================= */
 
 const STATISTICS_CONFIG = Object.freeze({
-    DECIMALS: 2
+
+    DECIMALS:
+        2
 });
+
+
+/* =========================================================
+   STATISTICS EVENT TYPES
+========================================================= */
+
+const STATISTICS_EVENT_TYPES =
+    Object.freeze({
+
+        ROUND_RECORDED:
+            "ROUND_RECORDED",
+
+        RESET:
+            "RESET",
+
+        REBUILT:
+            "REBUILT",
+
+        MIGRATED:
+            "MIGRATED"
+    });
 
 
 /* =========================================================
    DEFAULT STATISTICS
-
-   Must remain compatible with storage.js.
 ========================================================= */
 
-const DEFAULT_STATISTICS = Object.freeze({
+const DEFAULT_STATISTICS =
+    Object.freeze({
 
-    totalRounds: 0,
+        totalRounds:
+            0,
 
-    /*
-     Only completed WIN / LOSS bets.
+        totalBets:
+            0,
 
-     REFUND and NO_BET are excluded.
-    */
-    totalBets: 0,
+        totalWagered:
+            0,
 
-    totalWagered: 0,
+        totalReturned:
+            0,
 
-    totalReturned: 0,
+        totalProfit:
+            0,
 
-    /*
-     Gross positive net profit from winning rounds.
-    */
-    totalProfit: 0,
+        totalLoss:
+            0,
 
-    /*
-     Gross player losses stored as a positive value.
+        cashoutCount:
+            0,
 
-     Example:
-         LOSS profit = -1000
+        crashLossCount:
+            0,
 
-         totalLoss += 1000
-    */
-    totalLoss: 0,
+        highestCashoutMultiplier:
+            0,
 
-    cashoutCount: 0,
+        highestCrashMultiplier:
+            0,
 
-    crashLossCount: 0,
-
-    highestCashoutMultiplier: 0,
-
-    highestCrashMultiplier: 0,
-
-    /*
-     Highest NET profit from one winning round.
-
-     Example:
-         Bet      1000
-         Return   3500
-         Profit   2500
-
-         highestSingleWin = 2500
-    */
-    highestSingleWin: 0
-});
+        highestSingleWin:
+            0
+    });
 
 
 /* =========================================================
-   SESSION CACHE
-
-   This is now only a performance optimization.
-
-   It is NOT the authoritative duplicate guard.
-
-   Persistent duplicate protection comes from:
-       history[].statisticsRecorded
-========================================================= */
-
-const processedRoundIds =
-    new Set();
-
-
-/* =========================================================
-   STATISTICS LISTENERS
+   LISTENERS
 ========================================================= */
 
 const statisticsListeners =
@@ -148,6 +139,7 @@ const statisticsListeners =
 function subscribeToStatistics(
     listener
 ) {
+
     if (
         typeof listener !==
         "function"
@@ -157,12 +149,14 @@ function subscribeToStatistics(
         );
     }
 
+
     statisticsListeners.add(
         listener
     );
 
 
     return function unsubscribe() {
+
         statisticsListeners.delete(
             listener
         );
@@ -171,26 +165,20 @@ function subscribeToStatistics(
 
 
 /* =========================================================
-   NOTIFY LISTENERS
+   NOTIFY
 ========================================================= */
 
 function notifyStatisticsListeners(
-    previous,
-    statistics,
-    settlement = null
+    event
 ) {
+
     const payload = {
 
-        previous:
-            clone(previous),
+        ...clone(event),
 
-        statistics:
-            clone(statistics),
-
-        settlement:
-            settlement
-                ? clone(settlement)
-                : null
+        timestamp:
+            event.timestamp ??
+            Date.now()
     };
 
 
@@ -198,11 +186,15 @@ function notifyStatisticsListeners(
         const listener
         of statisticsListeners
     ) {
+
         try {
+
             listener(
                 payload
             );
+
         } catch (error) {
+
             console.error(
                 "[CG Flight] Statistics listener failed:",
                 error
@@ -213,13 +205,13 @@ function notifyStatisticsListeners(
 
 
 /* =========================================================
-   NUMBER HELPERS
+   NORMALIZERS
 ========================================================= */
 
-function normalizeNumber(
-    value,
-    fallback = 0
+function normalizeMoney(
+    value
 ) {
+
     const numeric =
         Number(value);
 
@@ -229,65 +221,95 @@ function normalizeNumber(
             numeric
         )
     ) {
-        return fallback;
+        return 0;
     }
 
 
     return roundTo(
         numeric,
-        STATISTICS_CONFIG.DECIMALS
+        STATISTICS_CONFIG
+            .DECIMALS
     );
 }
 
 
-function normalizeNonNegativeNumber(
-    value,
-    fallback = 0
+function normalizeNonNegativeMoney(
+    value
 ) {
+
     return Math.max(
         0,
-
-        normalizeNumber(
-            value,
-            fallback
+        normalizeMoney(
+            value
         )
     );
 }
 
 
-function normalizeNonNegativeInteger(
-    value,
-    fallback = 0
+function normalizeMultiplier(
+    value
 ) {
+
     const numeric =
         Number(value);
 
 
     if (
-        !Number.isInteger(
+        !Number.isFinite(
             numeric
         ) ||
         numeric < 0
     ) {
-        return fallback;
+        return 0;
     }
 
 
-    return numeric;
+    return roundTo(
+        numeric,
+        STATISTICS_CONFIG
+            .DECIMALS
+    );
+}
+
+
+function normalizeCount(
+    value
+) {
+
+    const numeric =
+        Number(value);
+
+
+    if (
+        !Number.isFinite(
+            numeric
+        )
+    ) {
+        return 0;
+    }
+
+
+    return Math.max(
+        0,
+        Math.trunc(
+            numeric
+        )
+    );
 }
 
 
 /* =========================================================
-   SANITIZE STATISTICS
+   NORMALIZE STATISTICS
 ========================================================= */
 
-function sanitizeStatistics(
+function normalizeStatistics(
     statistics
 ) {
+
     const source =
         statistics &&
-        typeof statistics === "object" &&
-        !Array.isArray(statistics)
+        typeof statistics ===
+            "object"
             ? statistics
             : {};
 
@@ -295,57 +317,57 @@ function sanitizeStatistics(
     return {
 
         totalRounds:
-            normalizeNonNegativeInteger(
+            normalizeCount(
                 source.totalRounds
             ),
 
         totalBets:
-            normalizeNonNegativeInteger(
+            normalizeCount(
                 source.totalBets
             ),
 
         totalWagered:
-            normalizeNonNegativeNumber(
+            normalizeNonNegativeMoney(
                 source.totalWagered
             ),
 
         totalReturned:
-            normalizeNonNegativeNumber(
+            normalizeNonNegativeMoney(
                 source.totalReturned
             ),
 
         totalProfit:
-            normalizeNonNegativeNumber(
+            normalizeNonNegativeMoney(
                 source.totalProfit
             ),
 
         totalLoss:
-            normalizeNonNegativeNumber(
+            normalizeNonNegativeMoney(
                 source.totalLoss
             ),
 
         cashoutCount:
-            normalizeNonNegativeInteger(
+            normalizeCount(
                 source.cashoutCount
             ),
 
         crashLossCount:
-            normalizeNonNegativeInteger(
+            normalizeCount(
                 source.crashLossCount
             ),
 
         highestCashoutMultiplier:
-            normalizeNonNegativeNumber(
+            normalizeMultiplier(
                 source.highestCashoutMultiplier
             ),
 
         highestCrashMultiplier:
-            normalizeNonNegativeNumber(
+            normalizeMultiplier(
                 source.highestCrashMultiplier
             ),
 
         highestSingleWin:
-            normalizeNonNegativeNumber(
+            normalizeNonNegativeMoney(
                 source.highestSingleWin
             )
     };
@@ -357,155 +379,71 @@ function sanitizeStatistics(
 ========================================================= */
 
 function getStatistics() {
+
     const data =
         getData();
 
 
-    return sanitizeStatistics(
+    return normalizeStatistics(
         data.statistics
     );
 }
 
 
 /* =========================================================
-   VALIDATE SETTLEMENT RECORD
+   FIND HISTORY ENTRY
 ========================================================= */
 
-function validateSettlement(
-    settlement
+function findHistoryEntryByRoundId(
+    history,
+    roundId
 ) {
-    if (
-        !settlement ||
-        typeof settlement !== "object" ||
-        Array.isArray(settlement)
-    ) {
-        return {
-            valid: false,
-
-            reason:
-                "INVALID_SETTLEMENT"
-        };
-    }
-
 
     if (
-        typeof settlement.roundId !==
-            "string" ||
-        settlement.roundId.length === 0
-    ) {
-        return {
-            valid: false,
-
-            reason:
-                "INVALID_ROUND_ID"
-        };
-    }
-
-
-    const validResults =
-        Object.values(
-            ROUND_RESULT
-        );
-
-
-    if (
-        !validResults.includes(
-            settlement.result
-        ) ||
-        settlement.result ===
-            ROUND_RESULT.NONE
-    ) {
-        return {
-            valid: false,
-
-            reason:
-                "INVALID_RESULT"
-        };
-    }
-
-
-    if (
-        !settlement.financial ||
-        typeof settlement.financial !==
-            "object"
-    ) {
-        return {
-            valid: false,
-
-            reason:
-                "MISSING_FINANCIAL_DATA"
-        };
-    }
-
-
-    const wagered =
-        Number(
-            settlement
-                .financial
-                .wagered
-        );
-
-
-    const returned =
-        Number(
-            settlement
-                .financial
-                .returned
-        );
-
-
-    const profit =
-        Number(
-            settlement
-                .financial
-                .profit
-        );
-
-
-    if (
-        !isFiniteNumber(
-            wagered
-        ) ||
-        !isFiniteNumber(
-            returned
-        ) ||
-        !isFiniteNumber(
-            profit
+        !Array.isArray(
+            history
         )
     ) {
-        return {
-            valid: false,
-
-            reason:
-                "INVALID_FINANCIAL_DATA"
-        };
+        return null;
     }
 
 
-    return {
-        valid: true
-    };
+    return (
+        history.find(
+            (entry) =>
+                entry &&
+                entry.roundId ===
+                    roundId
+        ) ??
+        null
+    );
+}
+
+
+/* =========================================================
+   VALID RESULT
+========================================================= */
+
+function isValidRoundResult(
+    result
+) {
+
+    return Object.values(
+        ROUND_RESULT
+    ).includes(
+        result
+    );
 }
 
 
 /* =========================================================
    VALID BET RESULT
-
-   WIN / LOSS:
-       counted as totalBets
-
-   REFUND:
-       stake returned before final risk result,
-       therefore excluded
-
-   NO_BET:
-       no player wager,
-       therefore excluded
 ========================================================= */
 
 function isValidBetResult(
     result
 ) {
+
     return (
         result ===
             ROUND_RESULT.WIN ||
@@ -516,236 +454,252 @@ function isValidBetResult(
 
 
 /* =========================================================
-   ENSURE HISTORY ENTRY EXISTS
+   APPLY ONE HISTORY ENTRY TO STATISTICS
 
-   Persistent statistics deduplication depends on History.
+   Pure mutation helper.
 
-   Even if recordSettlement() is manually called outside the
-   normal event chain, ensure the settlement has a history
-   entry first.
-
-   recordHistory() itself is duplicate-safe.
+   This function assumes the entry has NOT already been
+   counted.
 ========================================================= */
 
-function ensureHistoryEntry(
-    settlement
+function applyHistoryEntryToStatistics(
+    statistics,
+    entry
 ) {
+
     const result =
-        recordHistory(
-            settlement
+        entry.result;
+
+
+    /* -----------------------------------------------------
+       Every persisted round counts as a completed round.
+    ----------------------------------------------------- */
+
+    statistics.totalRounds +=
+        1;
+
+
+    /* -----------------------------------------------------
+       Highest Crash
+
+       Applies to all rounds that have a legitimate
+       Crash Point.
+    ----------------------------------------------------- */
+
+    if (
+        Number.isFinite(
+            Number(
+                entry.crashMultiplier
+            )
+        )
+    ) {
+
+        statistics
+            .highestCrashMultiplier =
+            Math.max(
+                statistics
+                    .highestCrashMultiplier,
+
+                normalizeMultiplier(
+                    entry.crashMultiplier
+                )
+            );
+    }
+
+
+    /* -----------------------------------------------------
+       REFUND / NO_BET stop here.
+
+       They are round records but not valid wagers.
+    ----------------------------------------------------- */
+
+    if (
+        !isValidBetResult(
+            result
+        )
+    ) {
+        return statistics;
+    }
+
+
+    const wagered =
+        normalizeNonNegativeMoney(
+            entry.financial
+                ?.wagered ??
+            entry.wagered ??
+            entry.betAmount
         );
 
 
-    if (!result.success) {
-        return {
-            success: false,
-
-            reason:
-                result.reason
-        };
-    }
+    const returned =
+        normalizeNonNegativeMoney(
+            entry.financial
+                ?.returned ??
+            entry.returned
+        );
 
 
-    return {
-        success: true,
-
-        recorded:
-            result.recorded,
-
-        entry:
-            result.entry
-    };
-}
+    const profit =
+        normalizeMoney(
+            entry.financial
+                ?.profit ??
+            entry.profit
+        );
 
 
-/* =========================================================
-   FIND HISTORY ENTRY INDEX
-========================================================= */
+    statistics.totalBets +=
+        1;
 
-function findHistoryEntryIndex(
-    history,
-    roundId
-) {
+
+    statistics.totalWagered =
+        roundTo(
+            statistics.totalWagered +
+            wagered,
+            2
+        );
+
+
+    statistics.totalReturned =
+        roundTo(
+            statistics.totalReturned +
+            returned,
+            2
+        );
+
+
+    /* =====================================================
+       WIN
+    ====================================================== */
+
     if (
-        !Array.isArray(
-            history
-        )
+        result ===
+        ROUND_RESULT.WIN
     ) {
-        return -1;
+
+        statistics.cashoutCount +=
+            1;
+
+
+        if (
+            profit > 0
+        ) {
+
+            statistics.totalProfit =
+                roundTo(
+                    statistics.totalProfit +
+                    profit,
+                    2
+                );
+
+
+            statistics.highestSingleWin =
+                Math.max(
+                    statistics.highestSingleWin,
+                    normalizeNonNegativeMoney(
+                        profit
+                    )
+                );
+        }
+
+
+        const cashoutMultiplier =
+            entry.cashout
+                ?.multiplier ??
+            entry.cashoutMultiplier;
+
+
+        if (
+            Number.isFinite(
+                Number(
+                    cashoutMultiplier
+                )
+            )
+        ) {
+
+            statistics
+                .highestCashoutMultiplier =
+                Math.max(
+                    statistics
+                        .highestCashoutMultiplier,
+
+                    normalizeMultiplier(
+                        cashoutMultiplier
+                    )
+                );
+        }
+
+
+        return statistics;
     }
 
 
-    return history.findIndex(
-        (entry) =>
-            entry &&
-            entry.roundId ===
-                roundId
-    );
+    /* =====================================================
+       LOSS
+    ====================================================== */
+
+    if (
+        result ===
+        ROUND_RESULT.LOSS
+    ) {
+
+        statistics.crashLossCount +=
+            1;
+
+
+        const lossAmount =
+            profit < 0
+                ? Math.abs(
+                    profit
+                )
+                : wagered;
+
+
+        statistics.totalLoss =
+            roundTo(
+                statistics.totalLoss +
+                normalizeNonNegativeMoney(
+                    lossAmount
+                ),
+                2
+            );
+    }
+
+
+    return statistics;
 }
 
 
 /* =========================================================
-   HAS PERSISTENT STATISTICS MARKER
+   RECORD ROUND STATISTICS
+
+   Canonical API called by settlement.js.
+
+   Expected order:
+       addHistoryEntry(record)
+       ↓
+       recordRoundStatistics(roundId)
+
+   Idempotency:
+       statisticsRecorded === true
+       -> do NOT count again
 ========================================================= */
 
-function hasPersistentStatisticsRecord(
+function recordRoundStatistics(
     roundId
 ) {
+
     if (
         typeof roundId !==
             "string" ||
-        roundId.length === 0
+        roundId.trim().length ===
+            0
     ) {
-        return false;
-    }
 
-
-    const data =
-        getData();
-
-
-    if (
-        !Array.isArray(
-            data.history
-        )
-    ) {
-        return false;
-    }
-
-
-    const entry =
-        data.history.find(
-            (item) =>
-                item &&
-                item.roundId ===
-                    roundId
-        );
-
-
-    return (
-        entry?.statisticsRecorded ===
-        true
-    );
-}
-
-
-/* =========================================================
-   RECORD SETTLEMENT
-
-   Persistent flow:
-
-   1. Validate settlement
-   2. Ensure History entry exists
-   3. Locate matching History entry
-   4. Check statisticsRecorded
-   5. Update statistics
-   6. Set statisticsRecorded = true
-   7. Save both atomically
-========================================================= */
-
-function recordSettlement(
-    settlement
-) {
-    const validation =
-        validateSettlement(
-            settlement
-        );
-
-
-    if (!validation.valid) {
         return {
             success: false,
 
-            recorded: false,
-
             reason:
-                validation.reason
-        };
-    }
-
-
-    const roundId =
-        settlement.roundId;
-
-
-    /* -----------------------------------------------------
-       Fast same-session check.
-
-       Persistent storage is still verified below when this
-       cache does not contain the ID.
-    ----------------------------------------------------- */
-
-    if (
-        processedRoundIds.has(
-            roundId
-        )
-    ) {
-        return {
-            success: true,
-
-            recorded: false,
-
-            reason:
-                "ROUND_ALREADY_RECORDED",
-
-            statistics:
-                getStatistics()
-        };
-    }
-
-
-    /* -----------------------------------------------------
-       Persistent pre-check.
-    ----------------------------------------------------- */
-
-    if (
-        hasPersistentStatisticsRecord(
-            roundId
-        )
-    ) {
-        processedRoundIds.add(
-            roundId
-        );
-
-
-        return {
-            success: true,
-
-            recorded: false,
-
-            reason:
-                "ROUND_ALREADY_RECORDED",
-
-            statistics:
-                getStatistics()
-        };
-    }
-
-
-    /* -----------------------------------------------------
-       Ensure the authoritative round record exists.
-
-       This also makes direct/manual statistics recording
-       safe outside the usual settlement event order.
-    ----------------------------------------------------- */
-
-    const historyResult =
-        ensureHistoryEntry(
-            settlement
-        );
-
-
-    if (!historyResult.success) {
-        return {
-            success: false,
-
-            recorded: false,
-
-            reason:
-                "HISTORY_RECORD_REQUIRED",
-
-            historyReason:
-                historyResult.reason
+                "INVALID_ROUND_ID"
         };
     }
 
@@ -754,40 +708,27 @@ function recordSettlement(
         null;
 
 
-    /* -----------------------------------------------------
-       Atomic persistent update.
+    const timestamp =
+        new Date()
+            .toISOString();
 
-       The statistical counters and the history marker are
-       committed in the SAME Local Storage write.
-    ----------------------------------------------------- */
 
-    const savedData =
+    const saved =
         updateData(
             (data) => {
 
-                if (
-                    !Array.isArray(
-                        data.history
-                    )
-                ) {
-                    data.history = [];
-                }
-
-
-                const historyIndex =
-                    findHistoryEntryIndex(
+                const entry =
+                    findHistoryEntryByRoundId(
                         data.history,
                         roundId
                     );
 
 
-                if (
-                    historyIndex < 0
-                ) {
-                    result = {
-                        success: false,
+                if (!entry) {
 
-                        recorded: false,
+                    result = {
+
+                        success: false,
 
                         reason:
                             "HISTORY_ENTRY_NOT_FOUND"
@@ -798,34 +739,51 @@ function recordSettlement(
                 }
 
 
-                const historyEntry =
-                    data.history[
-                        historyIndex
-                    ];
+                if (
+                    !isValidRoundResult(
+                        entry.result
+                    )
+                ) {
+
+                    result = {
+
+                        success: false,
+
+                        reason:
+                            "INVALID_HISTORY_RESULT"
+                    };
+
+
+                    return;
+                }
 
 
                 /* -----------------------------------------
-                   Persistent duplicate check INSIDE the
-                   atomic update operation.
+                   Already recorded.
 
-                   This is the final authority.
+                   This is treated as a successful
+                   idempotent no-op.
                 ------------------------------------------ */
 
                 if (
-                    historyEntry
-                        .statisticsRecorded ===
+                    entry.statisticsRecorded ===
                     true
                 ) {
+
                     result = {
+
                         success: true,
 
-                        recorded: false,
+                        recorded:
+                            false,
 
                         reason:
-                            "ROUND_ALREADY_RECORDED",
+                            "ALREADY_RECORDED",
+
+                        roundId,
 
                         statistics:
-                            sanitizeStatistics(
+                            normalizeStatistics(
                                 data.statistics
                             )
                     };
@@ -835,242 +793,467 @@ function recordSettlement(
                 }
 
 
-                const previous =
-                    sanitizeStatistics(
+                const statistics =
+                    normalizeStatistics(
                         data.statistics
                     );
 
 
-                const next = {
-                    ...previous
+                applyHistoryEntryToStatistics(
+                    statistics,
+                    entry
+                );
+
+
+                data.statistics =
+                    statistics;
+
+
+                entry.statisticsRecorded =
+                    true;
+
+
+                entry.statisticsRecordedAt =
+                    timestamp;
+
+
+                result = {
+
+                    success: true,
+
+                    recorded:
+                        true,
+
+                    roundId,
+
+                    result:
+                        entry.result,
+
+                    statistics:
+                        clone(
+                            statistics
+                        ),
+
+                    statisticsRecordedAt:
+                        timestamp
                 };
+            }
+        );
 
 
-                /* -----------------------------------------
-                   Every completed round counts.
+    if (!saved) {
 
-                   Includes:
-                   WIN
-                   LOSS
-                   REFUND
-                   NO_BET
-                ------------------------------------------ */
+        return {
+            success: false,
 
-                next.totalRounds += 1;
+            reason:
+                "STORAGE_WRITE_FAILED"
+        };
+    }
 
 
-                /* -----------------------------------------
-                   Highest crash multiplier.
+    if (!result) {
 
-                   This is a game outcome statistic, so even
-                   NO_BET / REFUND rounds may update it.
-                ------------------------------------------ */
+        return {
+            success: false,
 
-                const crashMultiplier =
-                    normalizeNonNegativeNumber(
-                        settlement
-                            .crashMultiplier
+            reason:
+                "UNKNOWN_STATISTICS_ERROR"
+        };
+    }
+
+
+    if (
+        result.success &&
+        result.recorded
+    ) {
+
+        notifyStatisticsListeners({
+
+            type:
+                STATISTICS_EVENT_TYPES
+                    .ROUND_RECORDED,
+
+            roundId,
+
+            result:
+                result.result,
+
+            statistics:
+                clone(
+                    result.statistics
+                )
+        });
+    }
+
+
+    return clone(
+        result
+    );
+}
+
+
+/* =========================================================
+   GET STATISTICS SUMMARY
+
+   UI-oriented derived data.
+========================================================= */
+
+function getStatisticsSummary() {
+
+    const statistics =
+        getStatistics();
+
+
+    const validBets =
+        statistics.totalBets;
+
+
+    const wins =
+        statistics.cashoutCount;
+
+
+    const losses =
+        statistics.crashLossCount;
+
+
+    const winRate =
+        validBets > 0
+            ? roundTo(
+                (
+                    wins /
+                    validBets
+                ) *
+                100,
+                2
+            )
+            : 0;
+
+
+    /*
+     Net Profit:
+
+         total successful profit
+         -
+         total crash losses
+
+     This is deliberately NOT:
+
+         totalReturned - totalWagered
+
+     although the two should normally be equivalent for
+     WIN/LOSS-only valid wagers.
+    */
+
+    const netProfit =
+        roundTo(
+            statistics.totalProfit -
+            statistics.totalLoss,
+            2
+        );
+
+
+    /*
+     Experienced Return Rate:
+
+         returned / wagered * 100
+
+     This is historical realized return over valid bets,
+     not theoretical RTP.
+    */
+
+    const experiencedReturnRate =
+        statistics.totalWagered > 0
+            ? roundTo(
+                (
+                    statistics
+                        .totalReturned /
+                    statistics
+                        .totalWagered
+                ) *
+                100,
+                2
+            )
+            : 0;
+
+
+    const averageBet =
+        validBets > 0
+            ? roundTo(
+                statistics
+                    .totalWagered /
+                validBets,
+                2
+            )
+            : 0;
+
+
+    const averageReturn =
+        validBets > 0
+            ? roundTo(
+                statistics
+                    .totalReturned /
+                validBets,
+                2
+            )
+            : 0;
+
+
+    const averageProfitPerBet =
+        validBets > 0
+            ? roundTo(
+                netProfit /
+                validBets,
+                2
+            )
+            : 0;
+
+
+    return {
+
+        /* -------------------------------------------------
+           Raw aggregates
+        -------------------------------------------------- */
+
+        ...statistics,
+
+
+        /* -------------------------------------------------
+           Aliases used by UI
+        -------------------------------------------------- */
+
+        completedRounds:
+            statistics.totalRounds,
+
+        validBets,
+
+        wins,
+
+        losses,
+
+
+        /* -------------------------------------------------
+           Derived metrics
+        -------------------------------------------------- */
+
+        winRate,
+
+        netProfit,
+
+        experiencedReturnRate,
+
+        averageBet,
+
+        averageReturn,
+
+        averageProfitPerBet
+    };
+}
+
+
+/* =========================================================
+   RESET STATISTICS
+
+   Development helper.
+
+   IMPORTANT:
+   If aggregates are reset, History entries must also have
+   their statisticsRecorded marker cleared. Otherwise
+   rebuild/record would think all rounds were already counted.
+========================================================= */
+
+function resetStatistics() {
+
+    const previous =
+        getStatistics();
+
+
+    const saved =
+        updateData(
+            (data) => {
+
+                data.statistics =
+                    clone(
+                        DEFAULT_STATISTICS
                     );
 
-
-                next.highestCrashMultiplier =
-                    Math.max(
-                        next
-                            .highestCrashMultiplier,
-
-                        crashMultiplier
-                    );
-
-
-                /* -----------------------------------------
-                   Valid wagering statistics.
-
-                   Only WIN / LOSS.
-                ------------------------------------------ */
 
                 if (
-                    isValidBetResult(
-                        settlement.result
+                    Array.isArray(
+                        data.history
                     )
                 ) {
-                    const wagered =
-                        normalizeNonNegativeNumber(
-                            settlement
-                                .financial
-                                .wagered
-                        );
 
-
-                    const returned =
-                        normalizeNonNegativeNumber(
-                            settlement
-                                .financial
-                                .returned
-                        );
-
-
-                    const profit =
-                        normalizeNumber(
-                            settlement
-                                .financial
-                                .profit
-                        );
-
-
-                    next.totalBets += 1;
-
-
-                    next.totalWagered =
-                        roundTo(
-                            next.totalWagered +
-                            wagered,
-
-                            STATISTICS_CONFIG
-                                .DECIMALS
-                        );
-
-
-                    next.totalReturned =
-                        roundTo(
-                            next.totalReturned +
-                            returned,
-
-                            STATISTICS_CONFIG
-                                .DECIMALS
-                        );
-
-
-                    /* =====================================
-                       WIN
-                    ====================================== */
-
-                    if (
-                        settlement.result ===
-                        ROUND_RESULT.WIN
+                    for (
+                        const entry
+                        of data.history
                     ) {
-                        next.cashoutCount +=
-                            1;
-
-
-                        /* ---------------------------------
-                           Gross positive profit
-                        ---------------------------------- */
 
                         if (
-                            profit > 0
+                            !entry ||
+                            typeof entry !==
+                                "object"
                         ) {
-                            next.totalProfit =
-                                roundTo(
-                                    next.totalProfit +
-                                    profit,
-
-                                    STATISTICS_CONFIG
-                                        .DECIMALS
-                                );
-
-
-                            next.highestSingleWin =
-                                Math.max(
-                                    next
-                                        .highestSingleWin,
-
-                                    profit
-                                );
+                            continue;
                         }
 
 
-                        /* ---------------------------------
-                           Highest Cash Out multiplier
-                        ---------------------------------- */
-
-                        const cashoutMultiplier =
-                            normalizeNonNegativeNumber(
-                                settlement
-                                    .cashout
-                                    ?.multiplier
-                            );
+                        entry.statisticsRecorded =
+                            false;
 
 
-                        next.highestCashoutMultiplier =
-                            Math.max(
-                                next
-                                    .highestCashoutMultiplier,
-
-                                cashoutMultiplier
-                            );
+                        entry.statisticsRecordedAt =
+                            null;
                     }
+                }
+            }
+        );
 
 
-                    /* =====================================
-                       LOSS
-                    ====================================== */
+    if (!saved) {
 
-                    if (
-                        settlement.result ===
-                        ROUND_RESULT.LOSS
+        return {
+            success: false,
+
+            reason:
+                "STORAGE_WRITE_FAILED"
+        };
+    }
+
+
+    const current =
+        getStatistics();
+
+
+    notifyStatisticsListeners({
+
+        type:
+            STATISTICS_EVENT_TYPES
+                .RESET,
+
+        previous,
+
+        statistics:
+            current
+    });
+
+
+    return {
+
+        success: true,
+
+        previous,
+
+        statistics:
+            current
+    };
+}
+
+
+/* =========================================================
+   REBUILD STATISTICS FROM HISTORY
+
+   This is the authoritative repair tool.
+
+   Every valid History entry is recalculated from zero and
+   then marked statisticsRecorded.
+========================================================= */
+
+function rebuildStatisticsFromHistory() {
+
+    let rebuilt =
+        null;
+
+
+    const timestamp =
+        new Date()
+            .toISOString();
+
+
+    const saved =
+        updateData(
+            (data) => {
+
+                const statistics =
+                    clone(
+                        DEFAULT_STATISTICS
+                    );
+
+
+                let recordedCount =
+                    0;
+
+
+                if (
+                    Array.isArray(
+                        data.history
+                    )
+                ) {
+
+                    for (
+                        const entry
+                        of data.history
                     ) {
-                        next.crashLossCount +=
-                            1;
+
+                        if (
+                            !entry ||
+                            typeof entry !==
+                                "object"
+                        ) {
+                            continue;
+                        }
 
 
                         if (
-                            profit < 0
+                            !isValidRoundResult(
+                                entry.result
+                            )
                         ) {
-                            next.totalLoss =
-                                roundTo(
-                                    next.totalLoss +
-                                    Math.abs(
-                                        profit
-                                    ),
 
-                                    STATISTICS_CONFIG
-                                        .DECIMALS
-                                );
+                            entry.statisticsRecorded =
+                                false;
+
+
+                            entry.statisticsRecordedAt =
+                                null;
+
+
+                            continue;
                         }
+
+
+                        applyHistoryEntryToStatistics(
+                            statistics,
+                            entry
+                        );
+
+
+                        entry.statisticsRecorded =
+                            true;
+
+
+                        entry.statisticsRecordedAt =
+                            timestamp;
+
+
+                        recordedCount +=
+                            1;
                     }
                 }
 
 
-                /* -----------------------------------------
-                   Save normalized statistics.
-                ------------------------------------------ */
-
                 data.statistics =
-                    sanitizeStatistics(
-                        next
+                    normalizeStatistics(
+                        statistics
                     );
 
 
-                /* -----------------------------------------
-                   PERSISTENT DEDUPLICATION MARKER
+                rebuilt = {
 
-                   This is written in the same updateData()
-                   operation as the counters above.
-                ------------------------------------------ */
+                    success:
+                        true,
 
-                historyEntry.statisticsRecorded =
-                    true;
-
-
-                historyEntry.statisticsRecordedAt =
-                    new Date()
-                        .toISOString();
-
-
-                data.history[
-                    historyIndex
-                ] =
-                    historyEntry;
-
-
-                result = {
-                    success: true,
-
-                    recorded: true,
-
-                    roundId,
-
-                    previous,
+                    recordedCount,
 
                     statistics:
                         clone(
@@ -1081,11 +1264,10 @@ function recordSettlement(
         );
 
 
-    if (!savedData) {
+    if (!saved) {
+
         return {
             success: false,
-
-            recorded: false,
 
             reason:
                 "STORAGE_WRITE_FAILED"
@@ -1093,616 +1275,50 @@ function recordSettlement(
     }
 
 
-    if (!result) {
-        return {
-            success: false,
+    notifyStatisticsListeners({
 
-            recorded: false,
+        type:
+            STATISTICS_EVENT_TYPES
+                .REBUILT,
 
-            reason:
-                "UNKNOWN_STATISTICS_ERROR"
-        };
-    }
+        recordedCount:
+            rebuilt.recordedCount,
 
-
-    /* -----------------------------------------------------
-       If the atomic callback rejected the operation,
-       respect that result.
-    ----------------------------------------------------- */
-
-    if (!result.success) {
-        return result;
-    }
-
-
-    /* -----------------------------------------------------
-       Cache even duplicate persistent results.
-    ----------------------------------------------------- */
-
-    processedRoundIds.add(
-        roundId
-    );
-
-
-    if (
-        result.recorded
-    ) {
-        notifyStatisticsListeners(
-            result.previous,
-            result.statistics,
-            settlement
-        );
-    }
-
-
-    return result;
-}
-
-
-/* =========================================================
-   DERIVED STATISTICS
-
-   These values are calculated dynamically instead of being
-   stored, preventing unnecessary duplicate state.
-========================================================= */
-
-function calculateDerivedStatistics(
-    statistics =
-        getStatistics()
-) {
-    const stats =
-        sanitizeStatistics(
-            statistics
-        );
-
-
-    /* -----------------------------------------------------
-       Net profit
-
-       gross winning profit
-       -
-       gross losses
-    ----------------------------------------------------- */
-
-    const netProfit =
-        roundTo(
-            stats.totalProfit -
-            stats.totalLoss,
-
-            STATISTICS_CONFIG
-                .DECIMALS
-        );
-
-
-    /* -----------------------------------------------------
-       Win Rate
-
-       successful Cash Outs / valid bets
-    ----------------------------------------------------- */
-
-    const winRate =
-        stats.totalBets > 0
-            ? (
-                stats.cashoutCount /
-                stats.totalBets
-            ) *
-            100
-            : 0;
-
-
-    /* -----------------------------------------------------
-       Loss Rate
-    ----------------------------------------------------- */
-
-    const lossRate =
-        stats.totalBets > 0
-            ? (
-                stats.crashLossCount /
-                stats.totalBets
-            ) *
-            100
-            : 0;
-
-
-    /* -----------------------------------------------------
-       Participation Rate
-
-       valid wagered rounds / all completed rounds
-    ----------------------------------------------------- */
-
-    const participationRate =
-        stats.totalRounds > 0
-            ? (
-                stats.totalBets /
-                stats.totalRounds
-            ) *
-            100
-            : 0;
-
-
-    /* -----------------------------------------------------
-       Average Bet
-    ----------------------------------------------------- */
-
-    const averageBet =
-        stats.totalBets > 0
-            ? (
-                stats.totalWagered /
-                stats.totalBets
+        statistics:
+            clone(
+                rebuilt.statistics
             )
-            : 0;
+    });
 
 
-    /* -----------------------------------------------------
-       Average Returned Amount Per Valid Bet
-    ----------------------------------------------------- */
-
-    const averageReturn =
-        stats.totalBets > 0
-            ? (
-                stats.totalReturned /
-                stats.totalBets
-            )
-            : 0;
-
-
-    /* -----------------------------------------------------
-       Average Net Profit Per Bet
-    ----------------------------------------------------- */
-
-    const averageProfitPerBet =
-        stats.totalBets > 0
-            ? (
-                netProfit /
-                stats.totalBets
-            )
-            : 0;
-
-
-    /* -----------------------------------------------------
-       Return Rate / RTP experienced by this local player
-
-       total returned / total wagered
-    ----------------------------------------------------- */
-
-    const returnRate =
-        stats.totalWagered > 0
-            ? (
-                stats.totalReturned /
-                stats.totalWagered
-            ) *
-            100
-            : 0;
-
-
-    return {
-
-        netProfit:
-            roundTo(
-                netProfit,
-                2
-            ),
-
-        winRate:
-            roundTo(
-                winRate,
-                2
-            ),
-
-        lossRate:
-            roundTo(
-                lossRate,
-                2
-            ),
-
-        participationRate:
-            roundTo(
-                participationRate,
-                2
-            ),
-
-        averageBet:
-            roundTo(
-                averageBet,
-                2
-            ),
-
-        averageReturn:
-            roundTo(
-                averageReturn,
-                2
-            ),
-
-        averageProfitPerBet:
-            roundTo(
-                averageProfitPerBet,
-                2
-            ),
-
-        returnRate:
-            roundTo(
-                returnRate,
-                2
-            )
-    };
+    return rebuilt;
 }
 
 
 /* =========================================================
-   STATISTICS SUMMARY
+   MIGRATE LEGACY STATISTICS MARKERS
 
-   Combines persistent raw counters and calculated values.
-========================================================= */
+   Problem:
+   Older versions may already contain aggregate Statistics
+   but old History records may lack statisticsRecorded.
 
-function getStatisticsSummary() {
-    const statistics =
-        getStatistics();
+   Blindly setting all old entries to false would cause the
+   next load to count them again.
 
+   Strategy:
+   - If every entry already has a boolean marker -> nothing
+   - If aggregate statistics are completely zero -> mark all
+     valid legacy entries false so they can be rebuilt
+   - If aggregates contain data -> assume legacy History was
+     already reflected in those aggregates and mark existing
+     valid entries true
 
-    const derived =
-        calculateDerivedStatistics(
-            statistics
-        );
-
-
-    return {
-        ...statistics,
-        ...derived
-    };
-}
-
-
-/* =========================================================
-   GET WIN / LOSS SUMMARY
-========================================================= */
-
-function getWinLossSummary() {
-    const statistics =
-        getStatistics();
-
-
-    return {
-
-        wins:
-            statistics
-                .cashoutCount,
-
-        losses:
-            statistics
-                .crashLossCount,
-
-        total:
-            statistics
-                .totalBets
-    };
-}
-
-
-/* =========================================================
-   PERFORMANCE CATEGORY
-
-   Descriptive UI helper only.
-========================================================= */
-
-function getPerformanceCategory(
-    statistics =
-        getStatistics()
-) {
-    const stats =
-        sanitizeStatistics(
-            statistics
-        );
-
-
-    if (
-        stats.totalBets === 0
-    ) {
-        return "NO_DATA";
-    }
-
-
-    const derived =
-        calculateDerivedStatistics(
-            stats
-        );
-
-
-    if (
-        derived.netProfit > 0
-    ) {
-        return "PROFIT";
-    }
-
-
-    if (
-        derived.netProfit < 0
-    ) {
-        return "LOSS";
-    }
-
-
-    return "EVEN";
-}
-
-
-/* =========================================================
-   INITIALIZE SESSION CACHE
-
-   Load all persistently marked History rounds into the
-   in-memory Set.
-
-   This is only an optimization.
-========================================================= */
-
-function initializeProcessedRoundCache() {
-    const data =
-        getData();
-
-
-    if (
-        !Array.isArray(
-            data.history
-        )
-    ) {
-        return;
-    }
-
-
-    for (
-        const entry
-        of data.history
-    ) {
-        if (
-            entry &&
-            typeof entry.roundId ===
-                "string" &&
-            entry.statisticsRecorded ===
-                true
-        ) {
-            processedRoundIds.add(
-                entry.roundId
-            );
-        }
-    }
-}
-
-
-/* =========================================================
-   MIGRATE LEGACY HISTORY MARKERS
-
-   Previous statistics.js versions could already have
-   updated aggregate statistics while History entries did
-   not yet have statisticsRecorded.
-
-   If aggregate statistics already contain completed rounds,
-   treat existing legacy History entries as previously
-   counted rather than risking double counting after upgrade.
-
-   This is a one-time compatibility repair.
+   For a fully authoritative repair, use
+   rebuildStatisticsFromHistory().
 ========================================================= */
 
 function migrateLegacyStatisticsMarkers() {
-    const data =
-        getData();
 
-
-    if (
-        !Array.isArray(
-            data.history
-        ) ||
-        data.history.length === 0
-    ) {
-        return {
-            success: true,
-
-            changed: false
-        };
-    }
-
-
-    const statistics =
-        sanitizeStatistics(
-            data.statistics
-        );
-
-
-    /*
-     If no statistics have ever been counted, do not mark
-     legacy History entries automatically.
-    */
-
-    if (
-        statistics.totalRounds === 0
-    ) {
-        return {
-            success: true,
-
-            changed: false
-        };
-    }
-
-
-    const unmarkedEntries =
-        data.history.filter(
-            (entry) =>
-                entry &&
-                entry.statisticsRecorded !==
-                    true
-        );
-
-
-    if (
-        unmarkedEntries.length === 0
-    ) {
-        return {
-            success: true,
-
-            changed: false
-        };
-    }
-
-
-    /*
-     Compatibility assumption:
-
-     Previous versions automatically wrote Statistics and
-     History from the same SETTLEMENT_COMPLETE event.
-
-     Therefore an existing legacy History entry is assumed
-     to already be represented in the aggregate counters.
-
-     This prevents an upgrade from double-counting old
-     rounds.
-    */
-
-    const savedData =
-        updateData(
-            (workingData) => {
-
-                if (
-                    !Array.isArray(
-                        workingData.history
-                    )
-                ) {
-                    return;
-                }
-
-
-                for (
-                    const entry
-                    of workingData.history
-                ) {
-                    if (
-                        !entry ||
-                        typeof entry.roundId !==
-                            "string"
-                    ) {
-                        continue;
-                    }
-
-
-                    if (
-                        entry.statisticsRecorded ===
-                        true
-                    ) {
-                        continue;
-                    }
-
-
-                    entry.statisticsRecorded =
-                        true;
-
-
-                    entry.statisticsRecordedAt =
-                        entry.recordedAt ??
-                        new Date()
-                            .toISOString();
-                }
-            }
-        );
-
-
-    return {
-        success:
-            Boolean(
-                savedData
-            ),
-
-        changed:
-            Boolean(
-                savedData
-            )
-    };
-}
-
-
-/* =========================================================
-   RESET STATISTICS
-
-   Resets aggregate statistics only.
-
-   History remains intact.
-
-   Existing History entries remain marked as processed so
-   old settlements cannot accidentally repopulate statistics
-   merely through duplicate events.
-
-   New future rounds will still be counted normally.
-========================================================= */
-
-function resetStatistics() {
-    const previous =
-        getStatistics();
-
-
-    const savedData =
-        updateData(
-            (data) => {
-
-                data.statistics = {
-                    ...DEFAULT_STATISTICS
-                };
-            }
-        );
-
-
-    if (!savedData) {
-        return {
-            success: false,
-
-            reason:
-                "STORAGE_WRITE_FAILED"
-        };
-    }
-
-
-    /*
-     Do NOT remove persistent history markers.
-     Otherwise old rounds could be counted again.
-    */
-
-    processedRoundIds.clear();
-
-
-    initializeProcessedRoundCache();
-
-
-    const statistics =
-        getStatistics();
-
-
-    notifyStatisticsListeners(
-        previous,
-        statistics,
-        null
-    );
-
-
-    return {
-        success: true,
-
-        previous,
-
-        statistics
-    };
-}
-
-
-/* =========================================================
-   REBUILD STATISTICS FROM HISTORY
-
-   Development / repair utility.
-
-   Unlike resetStatistics(), this intentionally recalculates
-   everything from saved History records.
-
-   Useful when:
-   - statistics data is damaged
-   - a future statistics schema changes
-   - derived persistent fields are added
-========================================================= */
-
-function rebuildStatisticsFromHistory() {
     const data =
         getData();
 
@@ -1711,277 +1327,149 @@ function rebuildStatisticsFromHistory() {
         Array.isArray(
             data.history
         )
-            ? clone(
-                data.history
-            )
+            ? data.history
             : [];
 
 
-    const previous =
-        getStatistics();
-
-
-    let rebuilt = {
-        ...DEFAULT_STATISTICS
-    };
-
-
-    for (
-        const entry
-        of history
-    ) {
-        const settlement =
-            entry?.settlement;
-
-
-        const validation =
-            validateSettlement(
-                settlement
-            );
-
-
-        if (!validation.valid) {
-            continue;
-        }
-
-
-        /* -------------------------------------------------
-           Round
-        -------------------------------------------------- */
-
-        rebuilt.totalRounds +=
-            1;
-
-
-        const crashMultiplier =
-            normalizeNonNegativeNumber(
-                settlement
-                    .crashMultiplier
-            );
-
-
-        rebuilt.highestCrashMultiplier =
-            Math.max(
-                rebuilt
-                    .highestCrashMultiplier,
-
-                crashMultiplier
-            );
-
-
-        /* -------------------------------------------------
-           Valid bet
-        -------------------------------------------------- */
-
-        if (
-            !isValidBetResult(
-                settlement.result
-            )
-        ) {
-            continue;
-        }
-
-
-        const wagered =
-            normalizeNonNegativeNumber(
-                settlement
-                    .financial
-                    .wagered
-            );
-
-
-        const returned =
-            normalizeNonNegativeNumber(
-                settlement
-                    .financial
-                    .returned
-            );
-
-
-        const profit =
-            normalizeNumber(
-                settlement
-                    .financial
-                    .profit
-            );
-
-
-        rebuilt.totalBets +=
-            1;
-
-
-        rebuilt.totalWagered =
-            roundTo(
-                rebuilt.totalWagered +
-                wagered,
-
-                STATISTICS_CONFIG
-                    .DECIMALS
-            );
-
-
-        rebuilt.totalReturned =
-            roundTo(
-                rebuilt.totalReturned +
-                returned,
-
-                STATISTICS_CONFIG
-                    .DECIMALS
-            );
-
-
-        /* -------------------------------------------------
-           WIN
-        -------------------------------------------------- */
-
-        if (
-            settlement.result ===
-            ROUND_RESULT.WIN
-        ) {
-            rebuilt.cashoutCount +=
-                1;
-
-
-            if (
-                profit > 0
-            ) {
-                rebuilt.totalProfit =
-                    roundTo(
-                        rebuilt.totalProfit +
-                        profit,
-
-                        STATISTICS_CONFIG
-                            .DECIMALS
-                    );
-
-
-                rebuilt.highestSingleWin =
-                    Math.max(
-                        rebuilt
-                            .highestSingleWin,
-
-                        profit
-                    );
-            }
-
-
-            const cashoutMultiplier =
-                normalizeNonNegativeNumber(
-                    settlement
-                        .cashout
-                        ?.multiplier
-                );
-
-
-            rebuilt.highestCashoutMultiplier =
-                Math.max(
-                    rebuilt
-                        .highestCashoutMultiplier,
-
-                    cashoutMultiplier
-                );
-        }
-
-
-        /* -------------------------------------------------
-           LOSS
-        -------------------------------------------------- */
-
-        if (
-            settlement.result ===
-            ROUND_RESULT.LOSS
-        ) {
-            rebuilt.crashLossCount +=
-                1;
-
-
-            if (
-                profit < 0
-            ) {
-                rebuilt.totalLoss =
-                    roundTo(
-                        rebuilt.totalLoss +
-                        Math.abs(
-                            profit
-                        ),
-
-                        STATISTICS_CONFIG
-                            .DECIMALS
-                    );
-            }
-        }
-    }
-
-
-    rebuilt =
-        sanitizeStatistics(
-            rebuilt
+    const missingMarkers =
+        history.filter(
+            (entry) =>
+                entry &&
+                typeof entry ===
+                    "object" &&
+                typeof entry
+                    .statisticsRecorded !==
+                    "boolean"
         );
 
 
-    const savedData =
+    if (
+        missingMarkers.length ===
+        0
+    ) {
+
+        return {
+            success: true,
+
+            migrated:
+                false,
+
+            count:
+                0
+        };
+    }
+
+
+    const statistics =
+        normalizeStatistics(
+            data.statistics
+        );
+
+
+    const aggregatesAreEmpty =
+        (
+            statistics.totalRounds === 0 &&
+            statistics.totalBets === 0 &&
+            statistics.totalWagered === 0 &&
+            statistics.totalReturned === 0 &&
+            statistics.totalProfit === 0 &&
+            statistics.totalLoss === 0 &&
+            statistics.cashoutCount === 0 &&
+            statistics.crashLossCount === 0 &&
+            statistics.highestCashoutMultiplier === 0 &&
+            statistics.highestCrashMultiplier === 0 &&
+            statistics.highestSingleWin === 0
+        );
+
+
+    const timestamp =
+        new Date()
+            .toISOString();
+
+
+    let migratedCount =
+        0;
+
+
+    const saved =
         updateData(
-            (workingData) => {
-
-                workingData.statistics =
-                    clone(
-                        rebuilt
-                    );
-
-
-                if (
-                    !Array.isArray(
-                        workingData.history
-                    )
-                ) {
-                    workingData.history =
-                        [];
-
-                    return;
-                }
-
-
-                /*
-                 Every valid History settlement has now been
-                 accounted for by this rebuild.
-                */
+            (root) => {
 
                 for (
                     const entry
-                    of workingData.history
+                    of root.history
                 ) {
+
                     if (
                         !entry ||
-                        !entry.settlement
+                        typeof entry !==
+                            "object" ||
+                        typeof entry
+                            .statisticsRecorded ===
+                            "boolean"
                     ) {
                         continue;
                     }
 
 
-                    const validation =
-                        validateSettlement(
-                            entry.settlement
-                        );
+                    if (
+                        !isValidRoundResult(
+                            entry.result
+                        )
+                    ) {
+
+                        entry.statisticsRecorded =
+                            false;
 
 
-                    if (!validation.valid) {
-                        continue;
+                        entry.statisticsRecordedAt =
+                            null;
+
+                    } else if (
+                        aggregatesAreEmpty
+                    ) {
+
+                        /*
+                         No aggregate data exists, so these
+                         entries are safe to treat as not yet
+                         recorded.
+                        */
+
+                        entry.statisticsRecorded =
+                            false;
+
+
+                        entry.statisticsRecordedAt =
+                            null;
+
+                    } else {
+
+                        /*
+                         Aggregate Statistics already exist.
+
+                         Conservatively assume legacy History
+                         has already contributed to them.
+                        */
+
+                        entry.statisticsRecorded =
+                            true;
+
+
+                        entry.statisticsRecordedAt =
+                            entry.statisticsRecordedAt ??
+                            timestamp;
                     }
 
 
-                    entry.statisticsRecorded =
-                        true;
-
-
-                    entry.statisticsRecordedAt =
-                        new Date()
-                            .toISOString();
+                    migratedCount +=
+                        1;
                 }
             }
         );
 
 
-    if (!savedData) {
+    if (!saved) {
+
         return {
             success: false,
 
@@ -1991,89 +1479,114 @@ function rebuildStatisticsFromHistory() {
     }
 
 
-    processedRoundIds.clear();
+    notifyStatisticsListeners({
 
+        type:
+            STATISTICS_EVENT_TYPES
+                .MIGRATED,
 
-    initializeProcessedRoundCache();
+        count:
+            migratedCount,
 
-
-    notifyStatisticsListeners(
-        previous,
-        rebuilt,
-        null
-    );
+        assumedRecorded:
+            !aggregatesAreEmpty
+    });
 
 
     return {
+
         success: true,
 
-        previous,
+        migrated:
+            true,
 
-        statistics:
-            clone(
-                rebuilt
-            ),
+        count:
+            migratedCount,
 
-        historyEntries:
-            history.length
+        assumedRecorded:
+            !aggregatesAreEmpty
     };
 }
 
 
 /* =========================================================
-   AUTO RECORD SETTLEMENT
-
-   settlement.js emits SETTLEMENT_COMPLETE after the round
-   has fully transitioned to ENDED.
-
-   recordSettlement() itself ensures History exists and is
-   persistently deduplicated.
+   GET ROUND STATISTICS STATUS
 ========================================================= */
 
-subscribeToSettlement(
-    (event) => {
+function getRoundStatisticsStatus(
+    roundId
+) {
 
-        if (
-            event.type !==
-            "SETTLEMENT_COMPLETE"
-        ) {
-            return;
-        }
+    const data =
+        getData();
 
 
-        const result =
-            recordSettlement(
-                event.settlement
-            );
+    const entry =
+        findHistoryEntryByRoundId(
+            data.history,
+            roundId
+        );
 
 
-        if (!result.success) {
-            console.error(
-                "[CG Flight] Statistics update failed:",
-                result
-            );
-        }
+    if (!entry) {
+
+        return {
+
+            exists:
+                false,
+
+            recorded:
+                false,
+
+            recordedAt:
+                null
+        };
     }
-);
+
+
+    return {
+
+        exists:
+            true,
+
+        recorded:
+            entry.statisticsRecorded ===
+            true,
+
+        recordedAt:
+            entry.statisticsRecordedAt ??
+            null,
+
+        result:
+            entry.result
+    };
+}
 
 
 /* =========================================================
-   MODULE INITIALIZATION
+   COMPATIBILITY ALIASES
 ========================================================= */
 
-/*
- First upgrade old History entries so already-counted rounds
- cannot become duplicates after adopting persistent markers.
-*/
+function recordStatistics(
+    roundId
+) {
 
-migrateLegacyStatisticsMarkers();
+    return recordRoundStatistics(
+        roundId
+    );
+}
 
 
-/*
- Then populate the optional session cache.
-*/
+function getStats() {
 
-initializeProcessedRoundCache();
+    return getStatistics();
+}
+
+
+function getStatsSummary() {
+
+    return getStatisticsSummary();
+}
 
 
 /* =========================================================
@@ -2082,22 +1595,25 @@ initializeProcessedRoundCache();
 
 export {
     STATISTICS_CONFIG,
+    STATISTICS_EVENT_TYPES,
     DEFAULT_STATISTICS,
 
     getStatistics,
     getStatisticsSummary,
 
-    calculateDerivedStatistics,
+    recordRoundStatistics,
 
-    recordSettlement,
-
-    hasPersistentStatisticsRecord,
-
-    getWinLossSummary,
-    getPerformanceCategory,
+    getRoundStatisticsStatus,
 
     resetStatistics,
-    rebuildStatisticsFromHistory,
 
-    subscribeToStatistics
+    rebuildStatisticsFromHistory,
+    migrateLegacyStatisticsMarkers,
+
+    subscribeToStatistics,
+
+    /* Compatibility */
+    recordStatistics,
+    getStats,
+    getStatsSummary
 };
